@@ -1,0 +1,7 @@
+{:linters
+ {:large-def {:level :warning :row-threshold 90}
+  :too-many-params {:level :warning :max-params 5}
+  :missing-docstring {:level :warning
+                      :exclude-namespaces [bitecho.hive.core-test]}
+  :unsorted-required-namespaces {:level :warning}}
+ :lint-as {clojure.test.check.clojure-test/defspec clojure.core/def}}
