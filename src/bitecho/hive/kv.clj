@@ -60,8 +60,10 @@
         chosen-indices (vec (repeatedly n-toks #(crypto/next-int rng (count vocab))))
         new-tokens (mapv #(+ 1000 (long %)) chosen-indices)
         words (mapv #(nth vocab %) chosen-indices)
+        self-name (if (qualified-keyword? agent-id)
+                    (str (namespace agent-id) "/" (name agent-id))
+                    (if (= agent-id :alpha) "Alpha" "Beta"))
         peer-name (if (= agent-id :alpha) "Beta" "Alpha")
-        self-name (if (= agent-id :alpha) "Alpha" "Beta")
         text (str "Hello " peer-name "! This is " self-name " (" (str/join " " (take 4 words)) ").")]
     {:text text
      :prompt-ids prompt-tokens

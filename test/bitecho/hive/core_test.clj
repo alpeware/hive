@@ -5,6 +5,8 @@
    3. Rule 4/5 shell lifecycle boundaries + full in-memory clj-datachannel/bitecho/mealy/clj-einsum stack roundtrip."
   (:require [bitecho.core.data :as data]
             [bitecho.hive.kv :as kv]
+            [bitecho.hive.main :as main]
+            [bitecho.hive.scenarios.cluster :as cluster]
             [bitecho.hive.scenarios.hello :as hello]
             [bitecho.hive.stack :as stack]
             [bitecho.hive.trace :as trace]
@@ -155,7 +157,129 @@
                        (every? :ok? (vals (:mealy-replay-checks hello-res)))))))
 
 ;; =============================================================================
-;; 4. Live Gemma 4 E2B BF16 Shared-VRAM Two-Agent E2E Scenario Test
+;; 4. Phase 2: Configurable N Machines x M Agents-Per-Machine Topology & Convergence
+;; =============================================================================
+
+(defspec ^{:doc "Property: Configurable N machines x M agents-per-machine topology construction, 1 VRAM weight load per machine, M isolated KV caches, and cross-machine vs intra-machine ring schedule."}
+  prop-nxm-multi-machine-topology-and-ring-schedule 35
+  (prop/for-all [n-machines (gen/choose 1 4)
+                 m-agents (gen/choose 1 6)
+                 use-override? gen/boolean
+                 extra-agent (gen/choose 0 3)]
+                (let [machine-ids (if (= n-machines 2)
+                                    [:nexus :vector]
+                                    (mapv #(keyword (str "m" %)) (range n-machines)))
+                      machine-agents-override (when use-override?
+                                                (into {}
+                                                      (map-indexed (fn [idx mid]
+                                                                     [mid (+ m-agents (if (zero? idx) extra-agent 0))])
+                                                                   machine-ids)))
+                      topo (cluster/build-cluster-topology
+                            {:machines n-machines
+                             :agents-per-machine m-agents
+                             :machine-ids machine-ids
+                             :machine-agents machine-agents-override
+                             :subnet-id "hive/swarm-01"})
+                      expected-total (if use-override?
+                                       (reduce + (vals machine-agents-override))
+                                       (* n-machines m-agents))
+                      schedule (:ring-schedule topo)]
+                  (and (= n-machines (:machine-count topo))
+                       (= expected-total (:total-agents topo))
+                       (= expected-total (count (:all-agents topo)))
+                       (= expected-total (count schedule))
+                       ;; When N >= 2 and M >= 2, ring schedule exercises both :cross-machine-p2p and :intra-machine legs
+                       (if (and (>= n-machines 2) (>= m-agents 2))
+                         (and (some #(= :cross-machine-p2p (:leg-type %)) schedule)
+                              (some #(= :intra-machine (:leg-type %)) schedule))
+                         true)))))
+
+(defspec ^{:doc "Property: Pure Sans-IO N x M multi-machine cluster execution converges on identical RFC 6962 Episode Merkle Roots across all N machines with 1 VRAM weight allocation per machine."}
+  prop-nxm-multi-machine-merkle-convergence-and-vram-isolation 20
+  (prop/for-all [n-machines (gen/choose 2 3)
+                 m-agents (gen/choose 1 3)
+                 seed (gen/choose 1000 999999)]
+                (let [res (cluster/run-in-memory-cluster-scenario
+                           {:machines n-machines
+                            :agents-per-machine m-agents
+                            :mode :seeded-mock
+                            :seed seed
+                            :max-new-tokens 12})
+                      per-machine (:machines-summary res)
+                      roots (mapv :episode-merkle-root (vals per-machine))]
+                  (and (:ok? res)
+                       (= n-machines (count per-machine))
+                       (= 1 (count (distinct roots)))
+                       (= (:converged-merkle-root res) (first roots))
+                       (every? (fn [[_ msum]]
+                                 (and (= 1 (get-in msum [:vram-proof :weight-allocations]))
+                                      (= (:agent-count msum) (get-in msum [:vram-proof :kv-cache-count]))
+                                      (true? (get-in msum [:vram-proof :shared-device-weights?]))
+                                      (true? (get-in msum [:vram-proof :isolated-kv-atoms?]))
+                                      (:ok? (:trace-verification msum))))
+                               per-machine)))))
+
+(deftest cli-flag-inventory-and-cluster-parsing-test
+  (testing "Rule 6 flag inventory: main/parse-cli-args parses all Phase 1 & Phase 2 N x M cluster CLI flags accurately"
+    (let [parsed (main/parse-cli-args
+                  ["--scenario" "cluster-hello"
+                   "--machine-id" "nexus"
+                   "--machines" "2"
+                   "--agents-per-machine" "2"
+                   "--machine-agents" "nexus=2,vector=2"
+                   "--turns" "4"
+                   "--subnet-id" "hive/swarm-01"
+                   "--bind-host" "192.168.86.36"
+                   "--bind-port" "5610"
+                   "--peers" "nexus=192.168.86.36:5610,vector=192.168.86.26:5610"
+                   "--mode" "seeded-mock"
+                   "--seed" "20261118"])]
+      (is (= :cluster-hello (:scenario parsed)))
+      (is (= :nexus (:machine-id parsed)))
+      (is (= 2 (:machines parsed)))
+      (is (= 2 (:agents-per-machine parsed)))
+      (is (= {:nexus 2 :vector 2} (:machine-agents parsed)))
+      (is (= 4 (:turns parsed)))
+      (is (= "hive/swarm-01" (:subnet-id parsed)))
+      (is (= "192.168.86.36" (:bind-host parsed)))
+      (is (= 5610 (:bind-port parsed)))
+      (is (= {:nexus {:host "192.168.86.36" :port 5610}
+              :vector {:host "192.168.86.26" :port 5610}}
+             (:peers parsed)))
+      (is (= :seeded-mock (:mode parsed)))
+      (is (= 20261118 (:seed parsed))))))
+
+(deftest live-tcp-p2p-2x2-cluster-loopback-test
+  (testing "Two machine home-nodes (:nexus and :vector) communicate over live TCP P2P sockets and converge on identical 4-turn Episode Merkle Roots"
+    (let [peers {:nexus {:host "127.0.0.1" :port 15610}
+                 :vector {:host "127.0.0.1" :port 15611}}
+          base-opts {:scenario :cluster-hello
+                     :machines 2
+                     :agents-per-machine 2
+                     :subnet-id "hive/swarm-01"
+                     :peers peers
+                     :mode :seeded-mock
+                     :seed 20261118
+                     :timeout-ms 30000}
+          fut-nexus (future (cluster/run-live-machine-cluster-node!
+                             (assoc base-opts :machine-id :nexus :bind-host "127.0.0.1" :bind-port 15610)))
+          fut-vector (future (cluster/run-live-machine-cluster-node!
+                              (assoc base-opts :machine-id :vector :bind-host "127.0.0.1" :bind-port 15611)))
+          res-nexus (deref fut-nexus 45000 {:timeout true})
+          res-vector (deref fut-vector 45000 {:timeout true})]
+      (is (:ok? res-nexus) (str "Nexus node failed: " (pr-str (dissoc res-nexus :episode-trace))))
+      (is (:ok? res-vector) (str "Vector node failed: " (pr-str (dissoc res-vector :episode-trace))))
+      (is (:converged? res-nexus))
+      (is (:converged? res-vector))
+      (is (= (:converged-merkle-root res-nexus) (:converged-merkle-root res-vector)))
+      (is (= 4 (count (:turns-telemetry res-nexus))))
+      (is (= 1 (get-in res-nexus [:vram-proof :weight-allocations])))
+      (is (= 2 (get-in res-nexus [:vram-proof :kv-cache-count])))
+      (is (= 1 (get-in res-vector [:vram-proof :weight-allocations])))
+      (is (= 2 (get-in res-vector [:vram-proof :kv-cache-count]))))))
+
+;; =============================================================================
+;; 5. Live Gemma 4 E2B BF16 Shared-VRAM Two-Agent E2E Scenario Test
 ;; =============================================================================
 
 (deftest e2e-gemma4-e2b-shared-vram-hello-scenario-test

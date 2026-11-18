@@ -365,11 +365,18 @@
        {:send [{:peer peer
                 :message text}]}])))
 
+(defn- agent-slug
+  "Returns a hyphenated slug for `agent-id` (e.g., `:nexus/agent-0` -> `\"nexus-agent-0\"`, `:alpha` -> `\"alpha\"`)."
+  [agent-id]
+  (if (qualified-keyword? agent-id)
+    (str (namespace agent-id) "-" (name agent-id))
+    (name agent-id)))
+
 (defn build-hive-mealy-agent-graph
   "Constructs the declarative `[:agent ...]` Hiccup AST for a Hive agent binding
    `:cap/compute` (`:compute/einsum`) and `:cap/net` (`:net/bitecho`)."
   [agent-id compute-cap-spec net-cap-spec]
-  (let [agent-kw (keyword (str "hive-agent-" (name agent-id)))]
+  (let [agent-kw (keyword (str "hive-agent-" (agent-slug agent-id)))]
     [:agent {:id agent-kw
              :ins [:turn-in]
              :outs [:turn-out]
