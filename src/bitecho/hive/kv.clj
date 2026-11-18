@@ -19,14 +19,27 @@
   "Default local path to Gemma 4 E2B IT BF16 safetensors model."
   "/home/simonpure/src/alpeware/clj-einsum/.models/gemma-4-E2B-it")
 
+(defn resolve-model-dir
+  "Resolves the Gemma 4 E2B model directory from explicit `model-dir`, `HIVE_MODEL_DIR` env var,
+   or `DEFAULT-GEMMA4-E2B-MODEL-DIR`."
+  [model-dir]
+  (or model-dir
+      (not-empty (System/getenv "HIVE_MODEL_DIR"))
+      DEFAULT-GEMMA4-E2B-MODEL-DIR))
+
 (defn resolve-uop-backend
-  "Resolves `:uop-rocm` when ROCm HIP/HIPRTC is available on host, falling back to `:uop-cpu`."
+  "Resolves `:uop-rocm` when ROCm HIP/HIPRTC is available on host, `:uop-intel` when Intel Arc / Xe
+   OpenCL GPU runtime is available, or falls back to `:uop-cpu`."
   [requested-backend]
-  (if (and requested-backend (not= requested-backend :auto))
-    requested-backend
-    (if (uop-rt/init-hip-bindings!)
-      :uop-rocm
-      :uop-cpu)))
+  (let [env-backend (some-> (System/getenv "HIVE_BACKEND") not-empty keyword)
+        req (or (when (and requested-backend (not= requested-backend :auto)) requested-backend)
+                (when (and env-backend (not= env-backend :auto)) env-backend))]
+    (if req
+      req
+      (cond
+        (uop-rt/init-hip-bindings!) :uop-rocm
+        (uop-rt/init-opencl-bindings!) :uop-intel
+        :else :uop-cpu))))
 
 (defn- seeded-mock-generate
   "Deterministic Sans-IO seeded token generator for fast generative property testing."
@@ -84,7 +97,7 @@
          precision (or (:precision opts) :bf16)
          seed (long (or (:seed opts) 20261118))
          quiet (if (contains? opts :quiet) (boolean (:quiet opts)) true)
-         model-dir (or (:model-dir opts) DEFAULT-GEMMA4-E2B-MODEL-DIR)
+         model-dir (resolve-model-dir (:model-dir opts))
          base-session
          (if (= mode :seeded-mock)
            {:mode :seeded-mock

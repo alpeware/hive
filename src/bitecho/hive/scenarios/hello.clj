@@ -116,6 +116,9 @@
           :mode (:mode kv-mux)
           :backend (:backend kv-mux)
           :uop-target (:uop-target kv-mux)
+          :platform (get-in kv-mux [:base-session :ctx :platform])
+          :turn1-telemetry (select-keys turn1 [:prefill-ms :decode-ms :decode-tok-s :decode-ms-tok :total-ms :prompt-tokens :new-tokens])
+          :turn2-telemetry (select-keys turn2 [:prefill-ms :decode-ms :decode-tok-s :decode-ms-tok :total-ms :prompt-tokens :new-tokens])
           :model-dir (:model-dir kv-mux)
           :precision (:precision kv-mux)
           :seed seed

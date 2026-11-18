@@ -12,21 +12,24 @@
   (println "  Bitecho Hive (alpeware/hive) — Phase 1 Full-Stack In-Memory E2E")
   (println "  Scenario: Two Gemma 4 E2B BF16 Agents (1 VRAM Weight Load, 2 KV Caches)")
   (println "========================================================================")
-  (let [res (hello/run-hello-scenario
+  (let [t0 (System/nanoTime)
+        res (hello/run-hello-scenario
              {:mode :live-gemma4
-              :model-dir kv/DEFAULT-GEMMA4-E2B-MODEL-DIR
+              :model-dir (kv/resolve-model-dir nil)
               :precision :bf16
               :max-new-tokens 24
               :max-seq-len 256
               :temperature 0.0
               :seed 20261118
-              :quiet false})]
+              :quiet false})
+        elapsed-ms (/ (- (System/nanoTime) t0) 1e6)]
     (println "\n------------------------------------------------------------------------")
     (println "  E2E Scenario Verification Summary")
     (println "------------------------------------------------------------------------")
-    (println (format "  • Overall Status              : %s" (if (:ok? res) "PASSED" "FAILED")))
+    (println (format "  • Overall Status              : %s (%.1f ms total)" (if (:ok? res) "PASSED" "FAILED") elapsed-ms))
     (println (format "  • Model                       : %s (%s)" (:model-dir res) (name (:precision res))))
-    (println (format "  • Compute Backend             : %s (target=%s)" (:backend res) (:uop-target res)))
+    (println (format "  • Compute Backend             : %s (target=%s, platform=%s)"
+                     (:backend res) (:uop-target res) (or (:platform res) (name (:uop-target res)))))
     (println (format "  • VRAM Weight Allocations     : %d (shared? %s, id=%d)"
                      (get-in res [:vram-proof :weight-allocations])
                      (get-in res [:vram-proof :shared-device-weights?])
@@ -37,8 +40,20 @@
                      (get-in res [:vram-proof :isolated-kv-arenas?])))
     (println (format "  • Bitecho E2EE P2P Session ID : %s" (:bitecho-session-id res)))
     (println (format "  • Turn 1 (Alpha -> Beta)      : %s" (pr-str (:alpha-greeting res))))
+    (println (format "  • Turn 1 Telemetry            : prefill=%.1f ms (%s toks), decode=%.1f ms (%s toks, %.2f tok/s)"
+                     (double (or (get-in res [:turn1-telemetry :prefill-ms]) 0.0))
+                     (str (or (get-in res [:turn1-telemetry :prompt-tokens]) "?"))
+                     (double (or (get-in res [:turn1-telemetry :decode-ms]) 0.0))
+                     (str (or (get-in res [:turn1-telemetry :new-tokens]) "?"))
+                     (double (or (get-in res [:turn1-telemetry :decode-tok-s]) 0.0))))
     (println (format "  • Beta Inbox Wire Receipt     : %s" (pr-str (get-in res [:wire-receipts :beta-received-from-alpha]))))
     (println (format "  • Turn 2 (Beta -> Alpha)      : %s" (pr-str (:beta-reply res))))
+    (println (format "  • Turn 2 Telemetry            : prefill=%.1f ms (%s toks), decode=%.1f ms (%s toks, %.2f tok/s)"
+                     (double (or (get-in res [:turn2-telemetry :prefill-ms]) 0.0))
+                     (str (or (get-in res [:turn2-telemetry :prompt-tokens]) "?"))
+                     (double (or (get-in res [:turn2-telemetry :decode-ms]) 0.0))
+                     (str (or (get-in res [:turn2-telemetry :new-tokens]) "?"))
+                     (double (or (get-in res [:turn2-telemetry :decode-tok-s]) 0.0))))
     (println (format "  • Alpha Inbox Wire Receipt    : %s" (pr-str (get-in res [:wire-receipts :alpha-received-from-beta]))))
     (println (format "  • Turn 1 KV Log Blob CID      : %s" (get-in res [:kv-chain-checks :alpha :head-cid])))
     (println (format "  • Turn 2 KV Log Blob CID      : %s" (get-in res [:kv-chain-checks :beta :head-cid])))

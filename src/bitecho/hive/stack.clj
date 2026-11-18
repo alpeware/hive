@@ -339,6 +339,13 @@
                      :output-text (:text gen-res)
                      :prompt-ids (:prompt-ids gen-res)
                      :new-token-ids (:new-token-ids gen-res)
+                     :prompt-tokens (:prompt-tokens gen-res)
+                     :new-tokens (:new-tokens gen-res)
+                     :prefill-ms (:prefill-ms gen-res)
+                     :decode-ms (:decode-ms gen-res)
+                     :decode-tok-s (:decode-tok-s gen-res)
+                     :decode-ms-tok (:decode-ms-tok gen-res)
+                     :total-ms (:total-ms gen-res)
                      :kv-log-cid (:kv-log-cid gen-res)
                      :send-receipt payload}]
         [(-> state

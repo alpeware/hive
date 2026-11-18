@@ -11,7 +11,7 @@ bitecho (network / economy / CAS)  <-  mealy (harness)  <-  clj-einsum (compute)
 ## Architecture & Technical Seams
 
 1. **Sans-IO Full-Stack Composition (`bitecho.hive.stack`):**
-   - Runs the entire `clj-datachannel` (RFC 4571 / SCTP framing) + `bitecho` (`bitecho.light-node.core` E2EE X25519 sealed sessions + `bitecho.sim.vopr` virtual-time byte router) + `mealy` (`[:agent ...]` declarative graphs with `:compute/einsum` and `:net/bitecho` capabilities) + `clj-einsum` (UOp ROCm/CPU Gemma 4 execution) stack in memory on a single JVM.
+   - Runs the entire `clj-datachannel` (RFC 4571 / SCTP framing) + `bitecho` (`bitecho.light-node.core` E2EE X25519 sealed sessions + `bitecho.sim.vopr` virtual-time byte router) + `mealy` (`[:agent ...]` declarative graphs with `:compute/einsum` and `:net/bitecho` capabilities) + `clj-einsum` (UOp ROCm / Intel Arc OpenCL / CPU Gemma 4 execution) stack in memory on a single JVM.
 2. **Immutable Append-Only KV Cache & Shared-VRAM Weight Multiplexing (`bitecho.hive.kv`):**
    - Models each agent's KV cache as an immutable, content-addressed append-only log (`Blob` chain) while multiplexing N isolated per-agent KV cache arenas (`kv-alpha`, `kv-beta`) over a **single** loaded Gemma 4 E2B BF16 VRAM weight allocation (`:device-weights`).
 3. **Content-Addressed Trace Receipts (`bitecho.hive.trace`):**

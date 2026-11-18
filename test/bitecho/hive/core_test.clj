@@ -15,6 +15,15 @@
             [clojure.test.check.properties :as prop]))
 
 ;; =============================================================================
+;; 0. Hardware Compute Backend Auto-Detection Inventory
+;; =============================================================================
+
+(deftest default-compute-backend-auto-detection-test
+  (testing "kv/resolve-uop-backend selects one of the supported UOp GPU/CPU backends (:uop-rocm, :uop-intel, :uop-cpu)"
+    (is (contains? #{:uop-rocm :uop-intel :uop-cpu} (kv/resolve-uop-backend :auto)))
+    (is (= :uop-intel (kv/resolve-uop-backend :uop-intel)))))
+
+;; =============================================================================
 ;; 1. Seeded Sans-IO Determinism & MUT-01 Non-Vacuity
 ;; =============================================================================
 
