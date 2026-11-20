@@ -6,18 +6,20 @@
   (:require [bitecho.core.data :as data]
             [bitecho.crypto :as crypto]
             [bitecho.fressian :as fressian]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [einsum.models.gemma4.runtime :as gemma4-rt]
             [einsum.runtime.arena :as arena]
-            [einsum.uop.runtime :as uop-rt]))
+            [einsum.uop.runtime :as uop-rt])
+  (:import (java.io File RandomAccessFile)))
 
 (def ^:const KV-BLOB-MEDIA-TYPE
   "Canonical media type for Fressian-encoded Hive KV log Blobs."
   "application/x-bitecho-hive-kv+fressian")
 
 (def ^:const DEFAULT-GEMMA4-E2B-MODEL-DIR
-  "Default local path to Gemma 4 E2B IT BF16 safetensors model."
-  "/home/simonpure/src/alpeware/clj-einsum/.models/gemma-4-E2B-it")
+  "Default relative path to Gemma 4 E2B IT BF16 safetensors model."
+  "../clj-einsum/.models/gemma-4-E2B-it")
 
 (defn resolve-model-dir
   "Resolves the Gemma 4 E2B model directory from explicit `model-dir`, `HIVE_MODEL_DIR` env var,
@@ -41,7 +43,64 @@
         (uop-rt/init-opencl-bindings!) :uop-intel
         :else :uop-cpu))))
 
-(defn- seeded-mock-generate
+(defn- read-file-header-bytes
+  "Reads up to `max-bytes` from the start of `^File f`."
+  ^bytes [^File f ^long max-bytes]
+  (let [len (min (long (.length f)) max-bytes)
+        buf (byte-array len)]
+    (when (pos? len)
+      (with-open [raf (RandomAccessFile. f "r")]
+        (.readFully raf buf)))
+    buf))
+
+(defn compute-model-weights-digest
+  "Computes a 64-hex SHA-256 manifest digest over `model-dir` and `precision`:
+   - In `:seeded-mock` mode, returns a deterministic 64-hex SHA-256 digest without disk I/O.
+   - Otherwise hashes `model.safetensors.index.json` if present, or the sorted `.safetensors`
+     shard filenames, byte lengths, and first 64 KiB header of each shard via `bitecho.core.data/compute-cid`."
+  ([model-dir precision]
+   (compute-model-weights-digest model-dir precision :live-gemma4))
+  ([model-dir precision mode]
+   (let [prec-name (name (or precision :bf16))
+         dir-str (str (or model-dir DEFAULT-GEMMA4-E2B-MODEL-DIR))]
+     (if (= mode :seeded-mock)
+       (data/compute-cid
+        (fressian/utf8->bytes (str "hive-seeded-mock-weights-v1:" dir-str ":" prec-name)))
+       (let [dir-file (io/file dir-str)
+             index-file (io/file dir-file "model.safetensors.index.json")
+             shard-files (when (and (.exists dir-file) (.isDirectory dir-file))
+                           (->> (.listFiles dir-file)
+                                (filter (fn [^File f]
+                                          (and (.isFile f)
+                                               (str/ends-with? (.getName f) ".safetensors"))))
+                                (sort-by (fn [^File f] (.getName f)))
+                                vec))]
+         (cond
+           (and (.exists index-file) (.isFile index-file))
+           (data/compute-cid
+            (fressian/encode-canonical
+             {:manifest/type :safetensors-index
+              :manifest/precision prec-name
+              :manifest/index-json (slurp index-file)}))
+
+           (seq shard-files)
+           (let [shards-manifest
+                 (mapv (fn [^File f]
+                         {:shard/name (.getName f)
+                          :shard/size-bytes (long (.length f))
+                          :shard/header-cid (data/compute-cid (read-file-header-bytes f 65536))})
+                       shard-files)]
+             (data/compute-cid
+              (fressian/encode-canonical
+               {:manifest/type :safetensors-shards
+                :manifest/precision prec-name
+                :manifest/shards shards-manifest})))
+
+           :else
+           (data/compute-cid
+            (fressian/utf8->bytes (str "hive-weights-fallback-v1:" dir-str ":" prec-name)))))))))
+
+(defn seeded-mock-generate
   "Deterministic Sans-IO seeded token generator for fast generative property testing."
   [seed agent-id turn-seq prompt max-new-tokens]
   (let [prompt-str (str (or prompt ""))
@@ -83,7 +142,7 @@
    - `:mode`: `:live-gemma4` (default) or `:seeded-mock`
    - `:model-dir`: path to Gemma 4 E2B IT safetensors
    - `:precision`: `:bf16` (default)
-   - `:backend`: `:uop-rocm`, `:uop-cpu`, or `:auto` (default `:auto`)
+   - `:backend`: `:uop-rocm`, `:uop-intel`, `:uop-cpu`, or `:auto` (default `:auto`)
    - `:max-seq-len`: maximum KV cache sequence length (default `256`)
    - `:max-new-tokens`: default max new tokens per turn (default `24`)
    - `:temperature`: sampling temperature (default `0.0`)
@@ -92,6 +151,7 @@
   ([] (init-shared-kv-multiplexer {}))
   ([opts]
    (let [mode (or (:mode opts) :live-gemma4)
+         effective-kv-mode (if (= mode :seeded-mock) :seeded-mock :live-gemma4)
          agent-ids (vec (or (:agent-ids opts) [:alpha :beta]))
          max-seq-len (long (or (:max-seq-len opts) 256))
          max-new-tokens (long (or (:max-new-tokens opts) 24))
@@ -100,8 +160,9 @@
          seed (long (or (:seed opts) 20261118))
          quiet (if (contains? opts :quiet) (boolean (:quiet opts)) true)
          model-dir (resolve-model-dir (:model-dir opts))
+         weights-digest (compute-model-weights-digest model-dir precision effective-kv-mode)
          base-session
-         (if (= mode :seeded-mock)
+         (if (= effective-kv-mode :seeded-mock)
            {:mode :seeded-mock
             :ctx {:backend :seeded-mock}
             :model-dir model-dir
@@ -139,10 +200,11 @@
                                               :session-arena child-arena)]
                         [aid agent-sess])))
                agent-ids)]
-     {:mode mode
+     {:mode effective-kv-mode
       :seed seed
       :model-dir (:model-dir base-session)
       :precision precision
+      :weights-digest weights-digest
       :backend (get-in base-session [:ctx :backend])
       :uop-target (get-in base-session [:ctx :uop-target])
       :max-seq-len max-seq-len
@@ -176,6 +238,7 @@
                             (count (distinct (map #(System/identityHashCode %) arenas))))]
     {:weight-allocations (:weight-allocations mux 1)
      :kv-cache-count (count sessions)
+     :weights-digest (:weights-digest mux)
      :shared-device-weights? shared-weights?
      :isolated-kv-atoms? distinct-kv-atoms?
      :isolated-kv-arenas? distinct-arenas?
@@ -217,7 +280,8 @@
                              :total-ms (double (or total-ms 0.0))}))
         updated-kv @kv-atom
         weights-id (long (System/identityHashCode (:device-weights agent-sess)))
-        weights-digest (str (:model-dir mux) ":" (name (or (:precision mux) :bf16)))
+        weights-digest (or (:weights-digest mux)
+                           (compute-model-weights-digest (:model-dir mux) (:precision mux) (:mode mux)))
         canonical-entry {:kv/version 1
                          :kv/agent-id agent-id
                          :kv/turn-seq (long (or turn-seq (inc (count prior-entries))))
@@ -238,7 +302,8 @@
                           :kv/cid cid
                           :kv/weights-identity-hash weights-id)
         mux' (-> mux
-                 (assoc :blob-store (:store put-res))
+                 (assoc :blob-store (:store put-res)
+                        :weights-digest weights-digest)
                  (update-in [:kv-logs agent-id] (fnil conj []) full-entry))]
     [mux' full-entry]))
 
@@ -263,12 +328,23 @@
                           :temperature (:temperature mux)
                           :quiet true}
                          call-opts)
-         gen-res (if (= :seeded-mock (:mode mux))
+         override-gen-fn (:mock-output-fn call-opts)
+         gen-res (cond
+                   (ifn? override-gen-fn)
+                   (override-gen-fn (or (:seed call-opts) (:seed mux))
+                                    agent-id
+                                    turn-seq
+                                    prompt
+                                    (:max-new-tokens eff-opts))
+
+                   (= :seeded-mock (:mode mux))
                    (seeded-mock-generate (or (:seed call-opts) (:seed mux))
                                          agent-id
                                          turn-seq
                                          prompt
                                          (:max-new-tokens eff-opts))
+
+                   :else
                    (let [prep (gemma4-rt/prepare-prompt-ids agent-sess prompt eff-opts)
                          out (gemma4-rt/generate-new-tokens-and-text agent-sess prompt eff-opts)]
                      (assoc out :prompt-ids (:clamped-prompt-ids prep))))
@@ -297,17 +373,21 @@
    - Every entry's `:kv/cid` matches a valid `Blob` in `(:blob-store mux)` whose Fressian-decoded map equals the entry.
    - `:kv/parent-cid` links strictly to the preceding entry's `:kv/cid` (`nil` on turn 1).
    - `:kv/cached-tokens` equals `(into (:kv/prompt-tokens entry) (:kv/new-tokens entry))`.
-   - `:kv/weights-identity-hash` matches the shared `:device-weights` identity hash."
+   - `:kv/weights-identity-hash` matches the shared `:device-weights` identity hash.
+   - `:kv/weights-digest` is a valid 64-hex SHA-256 string matching `(:weights-digest mux)`."
   [mux agent-id]
   (let [entries (vec (get-in mux [:kv-logs agent-id] []))
         store (:blob-store mux)
-        expected-weights-id (long (System/identityHashCode (:device-weights (:base-session mux))))]
+        expected-weights-id (long (System/identityHashCode (:device-weights (:base-session mux))))
+        expected-digest (or (:weights-digest mux)
+                            (compute-model-weights-digest (:model-dir mux) (:precision mux) (:mode mux)))]
     (loop [idx 0
            expected-parent nil]
       (if (>= idx (count entries))
         {:ok? true
          :agent-id agent-id
          :entry-count (count entries)
+         :weights-digest expected-digest
          :head-cid (:kv/cid (last entries))}
         (let [entry (nth entries idx)
               cid (:kv/cid entry)
@@ -334,6 +414,16 @@
 
             (not= expected-weights-id (long (:kv/weights-identity-hash entry)))
             {:ok? false :error :weights-identity-mismatch :cid cid :index idx}
+
+            (or (not (string? (:kv/weights-digest entry)))
+                (not (re-matches #"[0-9a-f]{64}" (:kv/weights-digest entry)))
+                (not= expected-digest (:kv/weights-digest entry)))
+            {:ok? false
+             :error :weights-digest-mismatch
+             :expected expected-digest
+             :actual (:kv/weights-digest entry)
+             :cid cid
+             :index idx}
 
             :else
             (recur (inc idx) cid)))))))

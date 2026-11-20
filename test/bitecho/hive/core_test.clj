@@ -284,7 +284,7 @@
 
 (deftest e2e-gemma4-e2b-shared-vram-hello-scenario-test
   (testing "Two Gemma 4 E2B agents share 1 VRAM weight allocation with 2 isolated KV caches and say hello over clj-datachannel/bitecho/mealy/clj-einsum"
-    (let [model-dir "/home/simonpure/src/alpeware/clj-einsum/.models/gemma-4-E2B-it"
+    (let [model-dir (kv/resolve-model-dir nil)
           res (hello/run-hello-scenario {:mode :live-gemma4
                                          :model-dir model-dir
                                          :precision :bf16

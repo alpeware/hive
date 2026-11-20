@@ -4,8 +4,11 @@
    1. Phase 1 Two-Agent Shared-VRAM Gemma 4 E2B 'Hello' E2E scenario (`--scenario hello`, default).
    2. Phase 2 Configurable `N` Machines x `M` Agents-Per-Machine Multi-Machine Hive Swarm (`--scenario cluster-hello`),
       supporting both in-memory `N x M` multi-machine simulation and live cross-machine LAN P2P execution
-      (`--machine-id <id> --machines <N> --agents-per-machine <M> --machine-agents <id=count,...> --peers <id=host:port,...>`)."
+      (`--machine-id <id> --machines <N> --agents-per-machine <M> --machine-agents <id=count,...> --peers <id=host:port,...>`).
+   3. Gate 0 Heterogeneous 10-Agent Hive Arena Bounty Demo (`--scenario arena-bounty`) with VOPR fault injection,
+      adversarial trifecta neutralization, 3-party quorum escrow conservation, and 0-capability replay + MUT-01 tamper proof."
   (:require [bitecho.hive.kv :as kv]
+            [bitecho.hive.scenarios.arena-bounty :as arena]
             [bitecho.hive.scenarios.cluster :as cluster]
             [bitecho.hive.scenarios.hello :as hello]
             [clojure.string :as str]))
@@ -58,6 +61,10 @@
           "--backend" (recur (nnext rem-args) (assoc acc :backend (keyword val-str)))
           "--model-dir" (recur (nnext rem-args) (assoc acc :model-dir val-str))
           "--precision" (recur (nnext rem-args) (assoc acc :precision (keyword val-str)))
+          "--fault-profile" (recur (nnext rem-args) (assoc acc :fault-profile (keyword val-str)))
+          "--local-workers" (recur (nnext rem-args) (assoc acc :local-workers (Long/parseLong val-str)))
+          "--requester-model" (recur (nnext rem-args) (assoc acc :requester-model val-str))
+          "--auditor-model" (recur (nnext rem-args) (assoc acc :auditor-model val-str))
           "--machine-id" (recur (nnext rem-args) (assoc acc :machine-id (keyword val-str)))
           "--machines" (recur (nnext rem-args) (assoc acc :machines (Long/parseLong val-str)))
           "--agents-per-machine" (recur (nnext rem-args) (assoc acc :agents-per-machine (Long/parseLong val-str)))
@@ -174,16 +181,102 @@
                      (:converged? res)))
     (println "========================================================================")))
 
+(defn- print-arena-bounty-summary
+  [res elapsed-ms]
+  (let [vram (:vram-proof res)
+        econ (:economics res)
+        escrow (:escrow res)
+        trifecta (:adversarial-trifecta res)
+        vopr (:vopr-stats res)
+        mut01 (:mut01-probe res)
+        replays (:mealy-replay-checks res)
+        ep-trace (:episode-trace res)]
+    (println "\n------------------------------------------------------------------------")
+    (println "  Gate 0 Heterogeneous 10-Agent Hive Arena Verification Summary")
+    (println "------------------------------------------------------------------------")
+    (println (format "  • Overall Status              : %s (%.1f ms total)"
+                     (if (:ok? res) "PASSED" "FAILED") elapsed-ms))
+    (println (format "  • Mode / Fault Profile / Seed : %s / %s / %d"
+                     (name (:mode res)) (name (:fault-profile res)) (:seed res)))
+    (println "\n  [Act 1 — Boot & Mesh Liftoff]")
+    (println (format "  • Swarm Roster (10 Agents)    : %d local Gemma 4 E2B workers + 1 rogue + %s requester + %s auditor + 1 observer"
+                     (count (get-in res [:roster :worker-ids]))
+                     (get-in res [:roster :requester-model])
+                     (get-in res [:roster :auditor-model])))
+    (println (format "  • VRAM Weight Allocations     : %d (shared? %s, KV caches=%d, isolated? %s)"
+                     (:weight-allocations vram)
+                     (:shared-device-weights? vram)
+                     (:kv-cache-count vram)
+                     (:isolated-kv-atoms? vram)))
+    (println (format "  • SHA-256 :kv/weights-digest  : %s" (:weights-digest res)))
+    (println (format "  • Bitecho Subnet / Starting   : %s | %d ECH total (--min-balance %d ECH)"
+                     (:subnet-id res) (:start-total-ech econ) (:min-balance econ)))
+    (println "\n  [Act 2 — Bounty Escrow Creation]")
+    (println (format "  • Bounty ID / Amount          : %s | %d ECH locked by :arena/requester"
+                     (get-in res [:bounty :bounty-id])
+                     (get-in res [:bounty :amount-ech])))
+    (println (format "  • Deliverable Spec            : %s" (get-in res [:bounty :spec])))
+    (println "\n  [Act 3 — Adversarial Trifecta (Rogue Agent Neutralized)]")
+    (println (format "  • Attack A (Budget Drain)     : blocked?=%s | error=%s | event=%s | wire-packets=%d | burned=%d ECH"
+                     (get-in trifecta [:attack-a-budget-drain :blocked?])
+                     (get-in trifecta [:attack-a-budget-drain :error])
+                     (first (get-in trifecta [:attack-a-budget-drain :event]))
+                     (get-in trifecta [:attack-a-budget-drain :wire-envelopes-emitted])
+                     (get-in trifecta [:attack-a-budget-drain :burned-ech])))
+    (println (format "  • Attack B (Kernel Hijack)    : blocked?=%s | error=%s | frozen-key=%s"
+                     (get-in trifecta [:attack-b-kernel-hijack :blocked?])
+                     (get-in trifecta [:attack-b-kernel-hijack :error])
+                     (get-in trifecta [:attack-b-kernel-hijack :frozen-key])))
+    (println (format "  • Attack C (Broken SCI Code)  : blocked?=%s | status=%s | tests-passed?=%s"
+                     (get-in trifecta [:attack-c-broken-deliverable :blocked?])
+                     (get-in trifecta [:attack-c-broken-deliverable :status])
+                     (get-in trifecta [:attack-c-broken-deliverable :tests-passed?])))
+    (println "\n  [Act 4 — Honest Completion Under VOPR Fault Injection]")
+    (println (format "  • VOPR Transport Telemetry    : sent=%d, dropped=%d, retransmitted=%d, delivered=%d, diagnose-drops=%d, silent-failures=%d"
+                     (:sent vopr 0) (:dropped vopr 0) (:retransmitted vopr 0)
+                     (:delivered vopr 0) (:diagnostics-dropped-total vopr 0) (:silent-failures vopr 0)))
+    (println (format "  • Winning Worker & Quorum     : %s | quorum=%s (valid? %s)"
+                     (:winner-id escrow)
+                     (pr-str (:quorum-signers escrow))
+                     (:quorum-valid? escrow)))
+    (println (format "  • Escrow ID                   : %s" (:escrow-id escrow)))
+    (println (format "  • Economic Conservation       : start=%d ECH == end=%d ECH + burn=%d ECH (0.5%% take, conserved? %s)"
+                     (:start-total-ech econ) (:end-total-ech econ) (:total-burned econ) (:conserved? econ)))
+    (println "\n  [Act 5 — Cryptographic Verification & Live MUT-01 Tamper Test]")
+    (println (format "  • BIP-005 Pointer Path        : %s/%s"
+                     (:pointer-subnet ep-trace) (:pointer-path ep-trace)))
+    (println (format "  • RFC 6962 Episode Merkle Root: %s" (:merkle-root ep-trace)))
+    (println (format "  • Zero-Capability Replay      : %d/%d agents passed replay-graph (0 GPU / 0 API calls)"
+                     (count (filter :ok? (vals replays)))
+                     (count replays)))
+    (println (format "  • MUT-01 TAMPER DETECTED      : %s (detected? %s)"
+                     (:error mut01) (:tamper-detected? mut01)))
+    (println "========================================================================")))
+
 (defn -main
-  "Executes the requested Bitecho Hive scenario (`--scenario hello` or `--scenario cluster-hello`)."
+  "Executes the requested Bitecho Hive scenario (`--scenario hello`, `--scenario cluster-hello`, or `--scenario arena-bounty`)."
   [& args]
   (let [opts (-> (parse-cli-args args)
                  (update :model-dir kv/resolve-model-dir))
         t0 (System/nanoTime)]
-    (if (or (= :cluster-hello (:scenario opts))
-            (some? (:machine-id opts))
-            (some? (:machines opts))
-            (some? (:peers opts)))
+    (cond
+      (= :arena-bounty (:scenario opts))
+      (do
+        (println "========================================================================")
+        (println "  Bitecho Hive (alpeware/hive) — Gate 0 Heterogeneous 10-Agent Arena")
+        (println "  Scenario: 6x Shared-VRAM Gemma 4 E2B + Frontier Requester/Auditor + Rogue + Observer")
+        (println "========================================================================")
+        (let [res (arena/run-arena-bounty-scenario opts)
+              elapsed-ms (/ (- (System/nanoTime) t0) 1e6)]
+          (print-arena-bounty-summary res elapsed-ms)
+          (shutdown-agents)
+          (when-not (:ok? res)
+            (System/exit 1))))
+
+      (or (= :cluster-hello (:scenario opts))
+          (some? (:machine-id opts))
+          (some? (:machines opts))
+          (some? (:peers opts)))
       (do
         (println "========================================================================")
         (println "  Bitecho Hive (alpeware/hive) — Phase 2 N x M Multi-Machine Swarm")
@@ -196,6 +289,8 @@
           (shutdown-agents)
           (when-not (:ok? res)
             (System/exit 1))))
+
+      :else
       (do
         (println "========================================================================")
         (println "  Bitecho Hive (alpeware/hive) — Phase 1 Full-Stack In-Memory E2E")

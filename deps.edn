@@ -1,4 +1,4 @@
-{:paths ["src" "resources" "dev"]
+{:paths ["src" "resources" "../bitecho/dev"]
  :deps {org.clojure/clojure {:mvn/version "1.12.4"}
         org.clojure/core.async {:mvn/version "1.9.829-alpha2"}
         org.clojure/data.json {:mvn/version "2.5.1"}
