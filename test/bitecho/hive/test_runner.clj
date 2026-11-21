@@ -3,6 +3,7 @@
   (:require [bitecho.hive.arena-bounty-test]
             [bitecho.hive.core-test]
             [bitecho.hive.rl-env-test]
+            [bitecho.hive.top-loop-test]
             [clojure.test :as t]))
 
 (defn -main
@@ -10,7 +11,8 @@
   [& _args]
   (let [summary (t/run-tests 'bitecho.hive.core-test
                              'bitecho.hive.arena-bounty-test
-                             'bitecho.hive.rl-env-test)]
+                             'bitecho.hive.rl-env-test
+                             'bitecho.hive.top-loop-test)]
     (shutdown-agents)
     (when (pos? (+ (:fail summary 0) (:error summary 0)))
       (System/exit 1))))
