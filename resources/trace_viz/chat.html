@@ -339,7 +339,14 @@ let node = null;
 let unsub = null;
 let activeTarget = { kind: "subnet", id: "bitecho.org/dev" };
 let messageLog = [];
+const seenMessageKeys = new Set();
 let petnamesByPk = {};
+
+function messageDedupeKey(ev) {
+  if (ev.msgId || ev.msg_id) return `id:${ev.msgId || ev.msg_id}`;
+  const scope = ev.subnetId || ev.sessionId || "";
+  return `seq:${ev.type || ""}|${scope}|${ev.from || ""}|${ev.seq ?? ""}|${ev.text || ""}`;
+}
 let kokoroModel = null;
 let audioCtx = null;
 let activeTtsSource = null;
@@ -822,6 +829,9 @@ async function connectNode() {
     if (node.onEvent) {
       unsub = node.onEvent((ev) => {
         if (ev.type === "message-received" || ev.type === "broadcast-received") {
+          const dk = messageDedupeKey(ev);
+          if (seenMessageKeys.has(dk)) return;
+          seenMessageKeys.add(dk);
           messageLog.push(ev);
           renderMessages();
           if ($("chk-auto-tts").checked && ev.text) {
@@ -855,7 +865,7 @@ async function sendCurrentMessage() {
     ? await node.sendBroadcast(activeTarget.id, txt)
     : await node.sendMessage(activeTarget.id, txt);
   if (res && res.ok) {
-    messageLog.push({
+    const ownEv = {
       type: activeTarget.kind === "subnet" ? "broadcast-received" : "message-received",
       subnetId: activeTarget.kind === "subnet" ? activeTarget.id : null,
       sessionId: activeTarget.kind === "dm" ? activeTarget.id : null,
@@ -863,9 +873,15 @@ async function sendCurrentMessage() {
       fromPetname: "You",
       color: "#34d399",
       seq: res.seq,
+      msgId: res.msgId || res.msg_id || null,
       text: txt
-    });
-    renderMessages();
+    };
+    const dk = messageDedupeKey(ownEv);
+    if (!seenMessageKeys.has(dk)) {
+      seenMessageKeys.add(dk);
+      messageLog.push(ownEv);
+      renderMessages();
+    }
   } else {
     const err = (res && res.error) || "send-failed";
     $("tts-status").textContent = `Send rejected: ${err}`;
