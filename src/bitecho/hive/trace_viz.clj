@@ -288,6 +288,16 @@
         (send-response! ex 200 "application/javascript; charset=utf-8"
                         (fetch-browser-bundle-bytes!))
 
+        (str/starts-with? path "/api/artifact/v1/blob/")
+        (let [cid (subs path (count "/api/artifact/v1/blob/"))
+              conn (.openConnection (.toURL (URI. (str "https://ns2.bitecho.org/artifact/v1/blob/" cid))))]
+          (.setConnectTimeout conn 10000)
+          (.setReadTimeout conn 15000)
+          (with-open [is (.getInputStream conn)
+                      baos (ByteArrayOutputStream.)]
+            (io/copy is baos)
+            (send-response! ex 200 "application/octet-stream" (.toByteArray baos))))
+
         (or (= path "/") (= path "/index.html"))
         (let [res (io/resource "trace_viz/index.html")
               html (if res (slurp res) (slurp "resources/trace_viz/index.html"))]

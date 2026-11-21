@@ -725,16 +725,17 @@ async function refreshSidebar() {
 }
 
 async function refreshRolodexStatus() {
-  if (!node || !node.exec) return;
+  if (!node) return;
   try {
-    const [rStat, mHead] = await Promise.all([
-      node.exec("rolodex-status", {}),
-      node.exec("memento-head", {})
+    const [pnRes, subRes, sesRes] = await Promise.all([
+      Promise.resolve(node.listPetnames ? node.listPetnames() : { petnames: [] }),
+      Promise.resolve(node.listSubnets ? node.listSubnets() : { subnets: [] }),
+      Promise.resolve(node.listSessions ? node.listSessions() : { sessions: [] })
     ]);
-    const rOk = rStat && rStat.ok !== false;
-    const seq = (rStat && (rStat.seq ?? rStat.headSeq)) ?? 0;
-    const mCid = (mHead && (mHead.headCid || mHead.cid)) || "none";
-    $("rolodex-status-text").innerHTML = `BIP-016 Rolodex: <strong>${rOk ? "ready" : "pending"}</strong> · seq=${seq}<br/>Memento head: <code>${String(mCid).slice(0, 16)}…</code>`;
+    const pCount = (pnRes && pnRes.petnames ? pnRes.petnames.length : 0);
+    const sCount = (subRes && subRes.subnets ? subRes.subnets.length : 0);
+    const dCount = (sesRes && sesRes.sessions ? sesRes.sessions.length : 0);
+    $("rolodex-status-text").innerHTML = `Local Rolodex (IndexedDB): <strong>${pCount}</strong> petnames · <strong>${sCount}</strong> subnets · <strong>${dCount}</strong> sessions`;
   } catch (e) {
     $("rolodex-status-text").textContent = `Rolodex status: ${e.message}`;
   }
@@ -847,12 +848,12 @@ $("btn-rolodex-put").addEventListener("click", async () => {
   await refreshRolodexStatus();
 });
 $("btn-rolodex-verify").addEventListener("click", async () => {
-  const cid = $("rolodex-cid-input").value.trim();
+  const cid = ($("rolodex-cid-input").value.trim() || "be7ec379170f0f849be325a29a3486b0ae6add6338db6a8c5f6743e5315d7bf4");
   if (!cid || !node || !node.getArtifact) return;
   $("rolodex-verify-out").textContent = "Verifying CID...";
-  const res = await node.getArtifact(cid);
+  const res = await node.getArtifact({ cid, baseUrl: `${window.location.origin}/api` });
   $("rolodex-verify-out").textContent = res && res.ok
-    ? `Verified CID ${res.cid.slice(0, 12)}… (${res.bytes ? res.bytes.length : 0} B)`
+    ? `SHA-256 Verified CID ${res.cid.slice(0, 12)}… (${res.bytes ? res.bytes.length : 0} B)`
     : `Verify failed: ${(res && res.error) || "not-found"}`;
 });
 
