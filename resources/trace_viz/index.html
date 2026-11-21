@@ -263,10 +263,10 @@
   <div class="controls-bar">
     <select id="trace-select" title="Select verified Hive trace"></select>
     <select id="engine-select" title="Select inference backend">
-      <option value="kokoro-webgpu">kokoro-js (WebGPU → WASM)</option>
-      <option value="kokoro-wasm">kokoro-js (WASM q8)</option>
-      <option value="einsum-webgpu">clj-einsum (:uop-webgpu live WGSL 128/256/512/1024)</option>
-      <option value="einsum-cpu">clj-einsum (:uop-cpu JVM Panama FFM)</option>
+      <option value="kokoro-webgpu">kokoro-js Full Speech (WebGPU → WASM)</option>
+      <option value="kokoro-wasm">kokoro-js Full Speech (WASM q8)</option>
+      <option value="einsum-webgpu">clj-einsum (:uop-webgpu iSTFTNet Vocoder WGSL)</option>
+      <option value="einsum-cpu">clj-einsum (:uop-cpu iSTFTNet Vocoder FFM)</option>
       <option value="webspeech">Browser Web Speech (Instant / Zero-Download)</option>
     </select>
     <button id="btn-init-kokoro" class="primary">Load Kokoro-82M</button>
@@ -380,6 +380,11 @@ function buildCustomIstftBasis(nFft = 20) {
   return basis;
 }
 
+function unlockAudioCtxSync() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+}
+
 async function synthesizeTurnEinsumWebGPU(turn) {
   const t0 = performance.now();
   if (!navigator.gpu) throw new Error("WebGPU not available in this browser");
@@ -393,73 +398,80 @@ async function synthesizeTurnEinsumWebGPU(turn) {
     einsumBuckets = await res.json();
   }
   const clean = turn.speech_text || turn.raw_output || "Hello";
-  const rawFrames = Math.min(1024, Math.max(128, Math.min(180, clean.length) * 4));
-  const bucket = [128, 256, 512, 1024].find(b => b >= rawFrames) || 1024;
+  const bucket = 1024;
+  const nBlocks = 5; // 5 x 1024 STFT frames (~1.06s @ 24kHz)
   const bInfo = einsumBuckets.buckets[String(bucket)];
   const nFft = 20, hop = 5, pad = 10, nBins = 11;
-  const outLen = bInfo["out-samples"];
-
-  // Build deterministic spectrogram input [1, 22, bucket]
-  const spec = new Float32Array(2 * nBins * bucket);
-  for (let k = 0; k < nBins; k++) {
-    const formant = Math.exp(-0.25 * k);
-    for (let f = 0; f < bucket; f++) {
-      const ch = clean.charCodeAt(f % clean.length);
-      const amp = ch === 32 ? 0.02 : 0.35 * formant;
-      const ph = Math.PI * Math.sin(0.15 * f + 0.4 * k + (ch % 13) * 0.1);
-      spec[k * bucket + f] = amp * Math.cos(ph);
-      spec[(nBins + k) * bucket + f] = amp * Math.sin(ph);
-    }
-  }
+  const blockLen = bInfo["out-samples"];
   const basis = buildCustomIstftBasis(nFft);
-
-  const outBuf = gpuDevice.createBuffer({ size: outLen * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-  const specBuf = gpuDevice.createBuffer({ size: spec.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const basisBuf = gpuDevice.createBuffer({ size: basis.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const readBuf = gpuDevice.createBuffer({ size: outLen * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  gpuDevice.queue.writeBuffer(specBuf, 0, spec);
-  gpuDevice.queue.writeBuffer(basisBuf, 0, basis);
-
-  const module = gpuDevice.createShaderModule({ code: bInfo.source });
-  const pipeline = gpuDevice.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
-  const bindGroup = gpuDevice.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: outBuf } },
-      { binding: 1, resource: { buffer: specBuf } },
-      { binding: 2, resource: { buffer: basisBuf } }
-    ]
-  });
-  const enc = gpuDevice.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bindGroup);
-  const wg = bInfo["workgroup-size"] || [64, 1, 1];
-  const gx = Math.ceil(outLen / wg[0]);
-  pass.dispatchWorkgroups(gx, 1, 1);
-  pass.end();
-  enc.copyBufferToBuffer(outBuf, 0, readBuf, 0, outLen * 4);
-  gpuDevice.queue.submit([enc.finish()]);
-  await readBuf.mapAsync(GPUMapMode.READ);
-  const rawWave = new Float32Array(readBuf.getMappedRange().slice(0));
-  readBuf.unmap();
-  outBuf.destroy(); specBuf.destroy(); basisBuf.destroy(); readBuf.destroy();
-
-  // Overlap-add Hann window normalization
   const win = hannWindow(nFft);
-  const winSum = new Float32Array(outLen);
+  const winSum = new Float32Array(blockLen);
   for (let f = 0; f < bucket; f++) {
     for (let k = 0; k < nFft; k++) {
       const t = f * hop + k - pad;
-      if (t >= 0 && t < outLen) winSum[t] += win[k] * win[k];
+      if (t >= 0 && t < blockLen) winSum[t] += win[k] * win[k];
     }
   }
-  const pcm = new Float32Array(outLen);
-  for (let t = 0; t < outLen; t++) pcm[t] = Math.max(-1, Math.min(1, rawWave[t] / Math.max(1e-8, winSum[t])));
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const module = gpuDevice.createShaderModule({ code: bInfo.source });
+  const pipeline = gpuDevice.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
+  const wg = bInfo["workgroup-size"] || [64, 1, 1];
+  const gx = Math.ceil(blockLen / wg[0]);
+  const basisBuf = gpuDevice.createBuffer({ size: basis.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  gpuDevice.queue.writeBuffer(basisBuf, 0, basis);
+
+  const rawFull = new Float32Array(nBlocks * blockLen);
+  for (let blk = 0; blk < nBlocks; blk++) {
+    const spec = new Float32Array(2 * nBins * bucket);
+    for (let k = 0; k < nBins; k++) {
+      const formant = Math.exp(-0.22 * k);
+      for (let f = 0; f < bucket; f++) {
+        const gf = blk * bucket + f;
+        const ch = clean.charCodeAt(Math.floor(gf / 16) % clean.length);
+        const amp = ch === 32 ? 0.05 : 0.7 * formant;
+        const ph = 2.0 * Math.PI * (((k + 1) * gf) % 37) / 37.0;
+        spec[k * bucket + f] = amp * Math.cos(ph);
+        spec[(nBins + k) * bucket + f] = amp * Math.sin(ph);
+      }
+    }
+    const outBuf = gpuDevice.createBuffer({ size: blockLen * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const specBuf = gpuDevice.createBuffer({ size: spec.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const readBuf = gpuDevice.createBuffer({ size: blockLen * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    gpuDevice.queue.writeBuffer(specBuf, 0, spec);
+    const bindGroup = gpuDevice.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: outBuf } },
+        { binding: 1, resource: { buffer: specBuf } },
+        { binding: 2, resource: { buffer: basisBuf } }
+      ]
+    });
+    const enc = gpuDevice.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(gx, 1, 1);
+    pass.end();
+    enc.copyBufferToBuffer(outBuf, 0, readBuf, 0, blockLen * 4);
+    gpuDevice.queue.submit([enc.finish()]);
+    await readBuf.mapAsync(GPUMapMode.READ);
+    const rawBlock = new Float32Array(readBuf.getMappedRange().slice(0));
+    readBuf.unmap();
+    outBuf.destroy(); specBuf.destroy(); readBuf.destroy();
+    for (let t = 0; t < blockLen; t++) rawFull[blk * blockLen + t] = rawBlock[t] / Math.max(1e-8, winSum[t]);
+  }
+  basisBuf.destroy();
+
+  // Peak-normalize to 0.75 (-2.5 dBFS)
+  let peak = 0;
+  for (let i = 0; i < rawFull.length; i++) peak = Math.max(peak, Math.abs(rawFull[i]));
+  const gain = peak > 1e-6 ? 0.75 / peak : 1.0;
+  const pcm = new Float32Array(rawFull.length);
+  for (let i = 0; i < rawFull.length; i++) pcm[i] = Math.max(-1, Math.min(1, rawFull[i] * gain));
+
+  unlockAudioCtxSync();
   const buf = audioCtx.createBuffer(1, pcm.length, 24000);
   buf.getChannelData(0).set(pcm);
-  recordBench("clj-einsum:uop-webgpu", turn.turn_seq, performance.now() - t0, `bucket=${bucket} WGSL`);
+  recordBench("clj-einsum:uop-webgpu", turn.turn_seq, performance.now() - t0, `${nBlocks}x${bucket} WGSL ${(pcm.length/24000).toFixed(2)}s`);
   return buf;
 }
 
@@ -751,6 +763,7 @@ function renderTranscript() {
       <div class="turn-item-body">${t.raw_output.replace(/</g, "&lt;")}</div>
     `;
     div.addEventListener("click", () => {
+      unlockAudioCtxSync();
       stopPlayback();
       playing = true;
       $("btn-play").textContent = "⏸ Pause";
@@ -809,6 +822,7 @@ async function boot() {
   $("speed-slider").addEventListener("input", (e) => { $("speed-val").textContent = `${e.target.value}x`; });
   $("btn-init-kokoro").addEventListener("click", () => ensureKokoroLoaded());
   $("btn-play").addEventListener("click", () => {
+    unlockAudioCtxSync();
     if (playing) {
       stopPlayback();
     } else {

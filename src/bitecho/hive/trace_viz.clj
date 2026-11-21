@@ -169,44 +169,83 @@
    "af_heart"   215.0})
 
 (defn synthesize-turn-uop-cpu!
-  "Synthesizes a 24 kHz WAV preview directly through `clj-einsum` `:uop-cpu`
-   (`kokoro/sine-gen` + `kokoro/run-custom-istft!` `:conv-transpose1d` + `pcm-f32->wav-bytes`),
-   bucketed to `128/256/512/1024` frames. Returns `{:wav-bytes :latency-ms :bucket :samples}`."
+  "Synthesizes an audible 24 kHz WAV vocoder preview directly through `clj-einsum` `:uop-cpu`
+   (`kokoro/sine-gen` + chunked `1024`-frame `kokoro/run-custom-istft!` `:conv-transpose1d` +
+   peak normalization to 0.75 + `pcm-f32->wav-bytes`).
+   Returns `{:wav-bytes :latency-ms :bucket :samples :duration-ms :peak :rms}`."
   [text voice-id]
   (let [t0 (System/nanoTime)
-        clean (sanitize-speech-text text)
-        n-chars (max 16 (min 180 (count clean)))
-        frames (min 1024 (max 128 (* 4 n-chars)))
-        bucket (or (kokoro/select-frame-bucket frames) 1024)
+        clean (let [s (sanitize-speech-text text)] (if (str/blank? s) "Hello from Bitecho Hive" s))
+        ;; 1024 STFT frames @ hop=5 = 5,115 samples (~213ms/block); run 5..8 blocks (~1.1s..1.7s)
+        n-blocks (max 5 (min 8 (quot (+ (count clean) 24) 20)))
+        bucket 1024
+        total-frames (* n-blocks bucket)
         n-fft 20
         hop 5
         n-bins (inc (quot n-fft 2))
         base-f0 (double (get voice-base-f0 voice-id 165.0))
-        ;; Build deterministic phoneme-cadence F0 & spectrogram driven by text characters
-        f0-arr (float-array (quot bucket 4))
-        _ (dotimes [i (alength f0-arr)]
+        ;; Build speech-cadence F0 contour across the full multi-block duration
+        f0-steps (quot total-frames 16)
+        f0-arr (float-array f0-steps)
+        _ (dotimes [i f0-steps]
             (let [ch (int (.charAt clean (mod i (count clean))))
-                  voiced? (not= ch 32)
-                  pitch (+ base-f0 (* 18.0 (Math/sin (* 0.25 (double i)))) (* 0.3 (double (mod ch 29))))]
+                  voiced? (and (not= ch 32) (not= ch 46) (not= ch 44))
+                  pitch (+ base-f0 (* 28.0 (Math/sin (* 0.18 (double i)))) (* 0.5 (double (mod ch 31))))]
               (aset f0-arr i (float (if voiced? pitch 0.0)))))
-        sg (kokoro/sine-gen f0-arr {:sample-rate 24000 :upsample-scale 4 :harmonic-num 8 :voiced-threshold 10.0})
-        mag (float-array (* n-bins bucket))
-        phase (float-array (* n-bins bucket))
+        sg (kokoro/sine-gen f0-arr {:sample-rate 24000 :upsample-scale 16 :harmonic-num 8 :voiced-threshold 10.0 :sine-amp 0.8})
         ^floats waves (:sine-waves sg)
-        _ (dotimes [k n-bins]
-            (let [formant (Math/exp (* -0.25 (double k)))]
-              (dotimes [f bucket]
-                (let [w-val (double (aget waves (+ (* (mod k 9) bucket) f)))
-                      idx (+ (* k bucket) f)]
-                  (aset mag idx (float (* 0.55 formant (+ 0.25 (Math/abs w-val)))))
-                  (aset phase idx (float (* Math/PI (Math/sin (+ (* 0.15 (double f)) (* 0.4 (double k)))))))))))
-        pcm (kokoro/run-custom-istft! @uop-cpu-ctx-cache mag phase {:frames bucket :n-fft n-fft :hop-length hop})
+        ;; Synthesize each 1024-frame bucket through compiled :uop-cpu CustomSTFT ConvTranspose1d
+        block-pcms
+        (mapv (fn [blk]
+                (let [f-off (* blk bucket)
+                      mag (float-array (* n-bins bucket))
+                      phase (float-array (* n-bins bucket))]
+                  (dotimes [k n-bins]
+                    (let [formant (Math/exp (* -0.22 (double k)))]
+                      (dotimes [f bucket]
+                        (let [gf (+ f-off f)
+                              w-val (double (aget waves (+ (* (mod k 9) total-frames) gf)))
+                              env-amp (+ 0.15 (Math/abs w-val))
+                              idx (+ (* k bucket) f)]
+                          (aset mag idx (float (* formant env-amp)))
+                          (aset phase idx (float (* 2.0 Math/PI (double (mod (* (+ k 1) gf) 37)) (/ 1.0 37.0))))))))
+                  (kokoro/run-custom-istft! @uop-cpu-ctx-cache mag phase {:frames bucket :n-fft n-fft :hop-length hop})))
+              (range n-blocks))
+        total-samples (reduce + 0 (map #(alength ^floats %) block-pcms))
+        raw-pcm (float-array total-samples)
+        _ (loop [bs block-pcms off 0]
+            (when (seq bs)
+              (let [^floats b (first bs)
+                    n (alength b)]
+                (System/arraycopy b 0 raw-pcm off n)
+                (recur (rest bs) (+ off n)))))
+        ;; Peak-normalize to 0.75 (-2.5 dBFS) so playback is loud & clear
+        raw-peak (loop [i 0 p 0.0]
+                   (if (>= i total-samples)
+                     p
+                     (recur (inc i) (max p (Math/abs (double (aget raw-pcm i)))))))
+        gain (if (> raw-peak 1e-6) (/ 0.75 raw-peak) 1.0)
+        pcm (float-array total-samples)
+        sum-sq (loop [i 0 acc 0.0]
+                 (if (>= i total-samples)
+                   acc
+                   (let [v (* (double (aget raw-pcm i)) gain)]
+                     (aset pcm i (float v))
+                     (recur (inc i) (+ acc (* v v))))))
+        rms (Math/sqrt (/ sum-sq (double (max 1 total-samples))))
+        peak (min 1.0 (* raw-peak gain))
         wav (kokoro/pcm-f32->wav-bytes pcm 24000)
-        lat-ms (long (/ (- (System/nanoTime) t0) 1e6))]
+        lat-ms (long (/ (- (System/nanoTime) t0) 1e6))
+        dur-ms (long (Math/round (* 1000.0 (/ (double total-samples) 24000.0))))]
+    (println (format "[trace-viz] /api/tts/uop-cpu voice=%s blocks=%d dur=%dms peak=%.3f rms=%.3f lat=%dms"
+                     voice-id n-blocks dur-ms peak rms lat-ms))
     {:wav-bytes wav
      :latency-ms lat-ms
      :bucket bucket
-     :samples (alength pcm)}))
+     :samples total-samples
+     :duration-ms dur-ms
+     :peak peak
+     :rms rms}))
 
 (defn- send-response!
   [^HttpExchange ex status content-type ^bytes body]
