@@ -13,7 +13,8 @@
             [bitecho.hive.twin-runner :as runner]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [einsum.models.kokoro :as kokoro])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
            [java.net InetSocketAddress]))
 
@@ -153,6 +154,9 @@
           (:text (runner/fetch-verified-artifact! {:cid jsonl_cid}))))
       (:text (runner/fetch-verified-artifact! {:cid jsonl_cid})))))
 
+(defonce ^:private kokoro-webgpu-buckets-cache
+  (delay (kokoro/compile-kokoro-webgpu-buckets)))
+
 (defn- send-response!
   [^HttpExchange ex status content-type ^bytes body]
   (let [hdrs (.getResponseHeaders ex)]
@@ -179,6 +183,11 @@
 
         (= path "/api/traces")
         (let [body (json/write-str {:traces (mapv #(dissoc % :local_path) trace-catalog)})]
+          (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
+
+        (= path "/api/kokoro-webgpu-buckets")
+        (let [bundles @kokoro-webgpu-buckets-cache
+              body (json/write-str bundles)]
           (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
 
         (str/starts-with? path "/api/trace/")
