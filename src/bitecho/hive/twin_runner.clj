@@ -8,6 +8,7 @@
    verification, scores via R-2 SCI, and emits verified R-3 v2 Merkle trace + JSONL."
   (:require [bitecho.hive.env :as env]
             [bitecho.hive.scorer :as scorer]
+            [bitecho.hive.top-loop :as top]
             [bitecho.hive.trace :as trace]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
@@ -136,19 +137,27 @@
          "Circle Objections, Addenda & Reactions:\n" feedback "\n\n"
          "Task: Output ONLY the complete, rewritten, self-contained proposal text (1-2 tight paragraphs, concrete and bounded: directly resolve every paramount objection and addendum flag with exact invariants, failure modes, and boundaries; affirm pure Sans-IO .cljc core + advisory-only boundary + real Stage 2 review gates). Do NOT include meta-commentary or invoke tools.")))
 
+(def ^:const RUN-3-BASE-REPO-HASH
+  "Anchored multi-repo base hash (bitecho@73ada39 + mealy@13d4e93 + hive@9248d4f)."
+  "661d926aeada43b6ed2f4f82dfff2adb1c4e422df37f8454d99ff9f824da9e13")
+
 (defn run-live-run-1!
-  "Executes live 5-seat closed-loop simulation (`live-run-1b` or `live-run-2`) via `agy --print`
-   across all 5 heterogeneous models with real LLM proposer-amendment rewrites in `:amendment-loop`,
-   runs disposable-copy Phase 2 patch + verification, scores via SCI, and writes
-   verified R-3 artifacts to `out-dir`."
-  [{:keys [seed out-dir max-review-rounds run-id proposal-id proposal-text vector-model]
+  "Executes live 5-seat closed-loop simulation (`live-run-1b`, `live-run-2`, or `live-run-3`)
+   via `agy --print` across all 5 heterogeneous models with real LLM proposer-amendment rewrites
+   in `:amendment-loop`, runs disposable-copy Phase 2 patch + verification, scores via SCI,
+   chains into `bitecho.hive.top-loop` (verifying fail-closed promotion gate on sim consent),
+   and writes verified R-3 artifacts to `out-dir`."
+  [{:keys [seed out-dir max-review-rounds run-id proposal-id proposal-text vector-model
+           base-repo-hash patch-doc-path]
     :or {seed 20261120
          out-dir "/tmp/hive-live-run2"
          max-review-rounds 3
          run-id "live-run-2"
          proposal-id "PROP-RUN-2-MEMENTO-CIRCLES"
          proposal-text env/RUN-2-PROPOSAL-TEXT
-         vector-model "gemini-4-carbon-medium"}}]
+         vector-model "gemini-4-carbon-medium"
+         base-repo-hash RUN-3-BASE-REPO-HASH
+         patch-doc-path "docs/twin-circle-advisory-policy.md"}}]
   (.mkdirs (io/file out-dir))
   (let [base-spec (env/run-1-scenario-spec seed)
         seats (mapv (fn [s]
@@ -246,21 +255,25 @@
                                                   {:timeout-ms 30000})
                 _ (when-not (:ok? clone-res)
                     (throw (ex-info "Failed to create disposable copy" clone-res)))
-                doc-file (io/file copy-dir "docs/twin-circle-advisory-policy.md")
+                doc-file (io/file copy-dir patch-doc-path)
+                _ (.mkdirs (.getParentFile doc-file))
                 _ (spit doc-file
-                        (str "# Standing Advisory Twin-Circle First Review\n\n"
-                             "Shaped Proposal (Fixed Point 1, Round " (:round st-fp1) "):\n\n"
+                        (str "# Advisory Twin-Circle Shaped Proposal (" run-id ")\n\n"
+                             "- **Base Repo Hash:** `" base-repo-hash "`\n"
+                             "- **Proposal ID:** `" proposal-id "`\n"
+                             "- **Fixed Point 1 Round:** " (:round st-fp1) "\n\n"
+                             "## Shaped Proposal\n\n"
                              (:proposal-text st-fp1) "\n\n"
-                             "**Hard Invariant:** Simulated outcomes are advisory only; all real gates unchanged.\n"))
-                _ (bwrap/run-command-vec! ["git" "-C" copy-dir "add" "docs/twin-circle-advisory-policy.md"])
+                             "**Hard Invariant:** Simulated outcomes are advisory only; simulated consent is never real consent, and all real Stage 2 review + devnet pointer promotion gates remain unchanged.\n"))
+                _ (bwrap/run-command-vec! ["git" "-C" copy-dir "add" patch-doc-path])
                 diff-res (bwrap/run-command-vec! ["git" "-C" copy-dir "diff" "--cached"])
                 patch-text (:stdout diff-res)
                 _ (spit (io/file out-dir (str run-id ".patch")) patch-text)
                 [st-patch _] (env/step st-p2 :vector
                                        {:action/type :protocol-act
-                                        :action/content "Generated advisory policy patch inside disposable copy."
+                                        :action/content (str "Generated advisory policy patch inside disposable copy (" patch-doc-path ").")
                                         :action/protocol {:verb :submit-patch :patch-text patch-text}
-                                        :action/raw-output "SUBMIT_PATCH docs/twin-circle-advisory-policy.md"
+                                        :action/raw-output (str "SUBMIT_PATCH " patch-doc-path)
                                         :latency-ms 50})
                 ;; Run real in-memory proof/chaos verification via our deterministic R-1/R-2/R-3 check
                 chaos-check (env/run-in-memory-closed-loop! (env/run-1-scenario-spec seed))
@@ -283,9 +296,30 @@
         verification (trace/verify-episode-trace-v2 trace-v2)
         jsonl (trace/export-trace-v2->jsonl trace-v2)
         out (env/outcome st-final)
+        telemetry-green? (boolean (and (= :fixed-point-2 (:status out))
+                                       (get-in out [:chaos-results :all-green?])
+                                       (:ok? verification)))
+        tl0 (top/init-top-loop {:repo-hash base-repo-hash
+                                :values-cid env/VALUES-DRAFT-CID})
+        [tl1 _] (top/record-sim-iteration
+                 tl0
+                 {:proposal-cid (get-in spec [:scenario/proposal :proposal/cid])
+                  :sim-trace-cid (:merkle-root trace-v2)
+                  :patch-cid (or (:patch-cid out) "none")
+                  :telemetry-cid (env/sha256-str (pr-str (:chaos-results out)))
+                  :telemetry-green? telemetry-green?})
+        ;; Verify hard gate: simulated consent MUST fail closed with :diagnose
+        sim-attempt-receipt (assoc (or (:sim-consent-receipt out) {:simulation? true :advisory-only true})
+                                   :patch-cid (or (:patch-cid out) "none")
+                                   :receipt-cid (:header-cid trace-v2))
+        [tl-checked gate-effects] (top/request-pointer-promotion tl1 sim-attempt-receipt)
+        gate-fail-closed? (and (= :pending-promotion (:phase tl-checked))
+                               (= base-repo-hash (:repo-hash tl-checked))
+                               (= :diagnose (ffirst gate-effects)))
         summary {:trace/version 2
                  :run-id (:run-id trace-v2)
                  :scenario-id (:scenario-id trace-v2)
+                 :base-repo-hash base-repo-hash
                  :live-agy-models? true
                  :bwrap-enforced? false
                  :bwrap-note "Host missing sys-apps/bubblewrap; Phase 1 ran read-only prompt-only turns without tools, Phase 2 ran on isolated /tmp disposable git clone."
@@ -303,6 +337,13 @@
                  :open-addenda (:open-addenda out)
                  :patch-cid (:patch-cid out)
                  :chaos-results (:chaos-results out)
+                 :top-loop {:base-repo-hash base-repo-hash
+                            :phase (:phase tl-checked)
+                            :pending-candidate (:pending-candidate tl-checked)
+                            :sim-promotion-gate-fail-closed? gate-fail-closed?
+                            :gate-effects gate-effects
+                            :chain-verified? (top/verify-top-loop-chain tl-checked)
+                            :diagnostics (:diagnostics tl-checked)}
                  :rewards rewards
                  :verification verification}]
     (spit (io/file out-dir (str run-id "-trace.edn")) (pr-str summary))
@@ -313,11 +354,32 @@
                       :turns (count (:turns trace-v2))
                       :ok? (:ok? verification)
                       :merkle-root (:merkle-root trace-v2)
-                      :team-reward (:team-reward rewards)}))
+                      :team-reward (:team-reward rewards)
+                      :gate-fail-closed? gate-fail-closed?}))
     summary))
 
+(defn run-live-run-3!
+  "Executes Live 5-Seat Run-3 (Whole-Stack Top-Loop proposal anchored to
+   `RUN-3-BASE-REPO-HASH` `661d926a...`)."
+  ([] (run-live-run-3! {}))
+  ([opts]
+   (run-live-run-1!
+    (merge {:seed 20261121
+            :out-dir "/tmp/hive-live-run3"
+            :max-review-rounds 3
+            :run-id "live-run-3"
+            :proposal-id "PROP-RUN-3-WHOLE-STACK-TOP-LOOP"
+            :proposal-text top/RUN-3-PROPOSAL-TEXT
+            :vector-model "gemini-4-carbon-medium"
+            :base-repo-hash RUN-3-BASE-REPO-HASH
+            :patch-doc-path "docs/run3-top-loop-advisory.md"}
+           opts))))
+
 (defn -main
-  "CLI entrypoint to execute live 5-seat Run-1 closed-loop simulation."
-  [& _args]
-  (run-live-run-1! {})
+  "CLI entrypoint to execute live 5-seat closed-loop simulations (`--run 3` or default Run-3)."
+  [& args]
+  (let [run-arg (some (fn [[k v]] (when (= k "--run") v)) (partition 2 1 args))]
+    (case run-arg
+      "2" (run-live-run-1! {})
+      (run-live-run-3! {})))
   (shutdown-agents))
