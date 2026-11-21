@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bitecho Hive — Live Chat UI (BitechoLightNode v1.0.0 + Per-Petname TTS)</title>
+<script src="https://bitecho.org/app/bitecho-browser.js"
+        integrity="sha384-czElqb27naiU8f0qZMFxhyiE0dtvA72I0mGR0czKMxSyQMfpenB/l0EpxVZd5MQt"
+        crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg: #0b1020;
+    --panel: #131b2e;
+    --panel-2: #19243d;
+    --border: #263452;
+    --text: #e6edf7;
+    --muted: #93a4c3;
+    --accent: #38bdf8;
+    --ok: #34d399;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: radial-gradient(circle at top left, #13203d 0%, var(--bg) 55%);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(11, 16, 32, 0.92);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  header h1 { margin: 0; font-size: 1.02rem; }
+  .pill {
+    font-size: 0.72rem;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--muted);
+  }
+  .pill.ok { border-color: #10b981; color: #6ee7b7; background: rgba(16, 185, 129, 0.14); }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  select, button, input, textarea {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.84rem;
+    font-family: inherit;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: linear-gradient(135deg, #0284c7, #2563eb); border-color: #38bdf8; font-weight: 600; }
+  a.nav-link { color: var(--accent); text-decoration: none; font-size: 0.82rem; font-weight: 600; }
+  .main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 290px 1fr;
+    min-height: 0;
+  }
+  @media (max-width: 820px) { .main { grid-template-columns: 1fr; } }
+  aside {
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+    padding: 12px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  aside h2 {
+    margin: 0 0 6px;
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+  .list-item {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    margin-bottom: 6px;
+    cursor: pointer;
+    font-size: 0.84rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+  }
+  .list-item.active { border-color: var(--accent); background: rgba(56, 189, 248, 0.14); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .chat-pane {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 12px 16px;
+    gap: 10px;
+  }
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-right: 4px;
+  }
+  .msg {
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    border-left-width: 4px;
+    background: var(--panel);
+    max-width: 880px;
+  }
+  .msg-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.76rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .msg-body {
+    white-space: pre-wrap;
+    line-height: 1.5;
+    font-size: 0.92rem;
+  }
+  .composer {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+  }
+  .composer textarea {
+    flex: 1;
+    min-height: 54px;
+    max-height: 180px;
+    resize: vertical;
+    line-height: 1.45;
+  }
+  .petname-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  .petname-form input, .petname-form select { font-size: 0.78rem; padding: 5px 7px; }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <h1>Bitecho Hive — Live Chat</h1>
+    <span id="api-badge" class="pill">BitechoLightNode: checking...</span>
+    <a class="nav-link" href="/">← Trace Audio Visualizer</a>
+  </div>
+  <div class="controls">
+    <select id="tts-engine" title="Incoming message TTS backend">
+      <option value="kokoro-webgpu">TTS: kokoro-js (WebGPU → WASM)</option>
+      <option value="einsum-cpu">TTS: clj-einsum (:uop-cpu Vocoder)</option>
+      <option value="webspeech">TTS: Web Speech</option>
+      <option value="off">TTS: Muted</option>
+    </select>
+    <label style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:4px;">
+      <input id="chk-auto-tts" type="checkbox" checked /> Auto-speak incoming
+    </label>
+    <button id="btn-connect" class="primary">Connect Node</button>
+  </div>
+</header>
+
+<div class="main">
+  <aside>
+    <div>
+      <h2>Subnet Broadcasts</h2>
+      <div id="subnet-list"></div>
+    </div>
+    <div>
+      <h2>Direct Sessions (DM)</h2>
+      <div id="session-list"></div>
+    </div>
+    <div>
+      <h2>Petnames, Colors &amp; Voices</h2>
+      <div id="petname-list"></div>
+      <div class="petname-form" style="margin-top:8px;">
+        <input id="pn-pubkey" placeholder="Peer pubkey (hex)" />
+        <input id="pn-name" placeholder="Petname (e.g. axiom)" />
+        <div style="display:flex;gap:6px;">
+          <select id="pn-voice" style="flex:1;">
+            <option value="am_michael">am_michael</option>
+            <option value="bm_george">bm_george</option>
+            <option value="am_adam">am_adam</option>
+            <option value="bm_lewis">bm_lewis</option>
+            <option value="af_heart">af_heart</option>
+            <option value="af_bella">af_bella</option>
+            <option value="bf_emma">bf_emma</option>
+          </select>
+          <input id="pn-color" type="color" value="#38bdf8" style="width:42px;padding:2px;" />
+        </div>
+        <button id="btn-save-pn">Save Petname Entry</button>
+      </div>
+    </div>
+  </aside>
+
+  <section class="chat-pane">
+    <div style="display:flex;justify-content:space-between;align-items:center;font-size:0.84rem;color:var(--muted);">
+      <span id="channel-header">Select a subnet or DM session</span>
+      <span id="tts-status">TTS ready</span>
+    </div>
+    <div id="messages" class="messages"></div>
+    <div class="composer">
+      <textarea id="msg-input" placeholder="Write a message... (Enter to send, Shift+Enter for newline)"></textarea>
+      <button id="btn-send" class="primary" style="height:44px;padding:0 18px;">Send</button>
+    </div>
+  </section>
+</div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const PALETTE = ["#f59e0b", "#38bdf8", "#a78bfa", "#34d399", "#fb7185", "#f97316", "#22d3ee", "#e879f9"];
+const DEFAULT_VOICES = { simon: "am_michael", axiom: "bm_george", nexus: "am_adam", vector: "bm_lewis", lumen: "af_heart" };
+
+let node = null;
+let unsub = null;
+let activeTarget = { kind: "subnet", id: "bitecho.org/dev" };
+let messageLog = [];
+let petnamesByPk = {};
+let kokoroModel = null;
+let audioCtx = null;
+
+function colorForKey(key) {
+  let h = 0;
+  const s = String(key || "anon");
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return PALETTE[Math.abs(h) % PALETTE.length];
+}
+
+function unlockAudioSync() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+}
+
+async function speakText(text, voiceId) {
+  const engine = $("tts-engine").value;
+  if (engine === "off" || !text) return;
+  const voice = voiceId || "af_heart";
+  if (engine === "webspeech") {
+    const u = new SpeechSynthesisUtterance(text);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+    return;
+  }
+  if (engine === "einsum-cpu") {
+    $("tts-status").textContent = `clj-einsum :uop-cpu (${voice})...`;
+    const res = await fetch("/api/tts/uop-cpu", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voice })
+    });
+    const arr = await res.arrayBuffer();
+    unlockAudioSync();
+    const buf = await audioCtx.decodeAudioData(arr);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(0);
+    $("tts-status").textContent = `Played via clj-einsum :uop-cpu (${res.headers.get("X-Einsum-Latency-Ms")} ms)`;
+    return;
+  }
+  try {
+    if (!kokoroModel) {
+      $("tts-status").textContent = "Loading Kokoro-82M...";
+      const { KokoroTTS } = await import("https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm");
+      const useGpu = !!navigator.gpu;
+      kokoroModel = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
+        dtype: useGpu ? "fp32" : "q8",
+        device: useGpu ? "webgpu" : "wasm"
+      });
+    }
+    $("tts-status").textContent = `Speaking (${voice})...`;
+    const out = await kokoroModel.generate(text, { voice });
+    unlockAudioSync();
+    const buf = audioCtx.createBuffer(1, out.audio.length, out.sampling_rate || 24000);
+    buf.getChannelData(0).set(out.audio);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(0);
+    $("tts-status").textContent = `Kokoro ready (${voice})`;
+  } catch (e) {
+    $("tts-status").textContent = `TTS error: ${e.message}`;
+  }
+}
+
+function renderLists(subnets, sessions, petnames) {
+  $("subnet-list").innerHTML = (subnets.length ? subnets : ["bitecho.org/dev", "bitecho.org/team", "bitecho.org/infra"])
+    .map(s => `<div class="list-item ${activeTarget.kind === "subnet" && activeTarget.id === s ? "active" : ""}" data-kind="subnet" data-id="${s}"><span># ${s}</span></div>`).join("");
+  $("session-list").innerHTML = sessions.map(s => {
+    const label = s.peerPetname || s.peer_petname || (s.sessionId || s.session_id || "").slice(0, 12);
+    const sid = s.sessionId || s.session_id;
+    const col = s.color || colorForKey(label);
+    return `<div class="list-item ${activeTarget.kind === "dm" && activeTarget.id === sid ? "active" : ""}" data-kind="dm" data-id="${sid}"><span><span class="dot" style="background:${col}"></span>${label}</span></div>`;
+  }).join("") || `<div style="font-size:0.78rem;color:var(--muted);">No active DM sessions yet</div>`;
+
+  $("petname-list").innerHTML = petnames.map(p => {
+    const col = p.color || colorForKey(p.petname || p.pubkey);
+    const v = p.voiceId || DEFAULT_VOICES[(p.petname || "").toLowerCase()] || "af_heart";
+    return `<div class="list-item" style="cursor:default;"><span><span class="dot" style="background:${col}"></span><strong>${p.petname}</strong></span><span style="font-size:0.74rem;color:var(--muted);">${v}</span></div>`;
+  }).join("") || `<div style="font-size:0.78rem;color:var(--muted);">No petnames saved yet</div>`;
+
+  document.querySelectorAll(".list-item[data-kind]").forEach(el => {
+    el.addEventListener("click", () => {
+      activeTarget = { kind: el.dataset.kind, id: el.dataset.id };
+      $("channel-header").textContent = activeTarget.kind === "subnet" ? `Subnet Broadcast: #${activeTarget.id}` : `DM Session: ${activeTarget.id.slice(0, 16)}…`;
+      renderMessages();
+      refreshSidebar();
+    });
+  });
+}
+
+function renderMessages() {
+  const box = $("messages");
+  const filtered = messageLog.filter(m => {
+    if (activeTarget.kind === "subnet") return m.subnetId === activeTarget.id;
+    return m.sessionId === activeTarget.id;
+  });
+  box.innerHTML = "";
+  for (const m of filtered) {
+    const pn = petnamesByPk[m.from] || {};
+    const name = m.fromPetname || pn.petname || (m.from || "unknown").slice(0, 12);
+    const col = m.color || pn.color || colorForKey(name);
+    const voice = m.voiceId || pn.voiceId || DEFAULT_VOICES[name.toLowerCase()] || "af_heart";
+    const div = document.createElement("div");
+    div.className = "msg";
+    div.style.borderLeftColor = col;
+    div.innerHTML = `
+      <div class="msg-head">
+        <span><strong style="color:${col}">${name}</strong> · <code>${voice}</code> · seq ${m.seq ?? "-"}</span>
+        <button class="btn-speak-one" style="padding:2px 8px;font-size:0.74rem;">🔊 Speak</button>
+      </div>
+      <div class="msg-body"></div>
+    `;
+    div.querySelector(".msg-body").textContent = m.text || "";
+    div.querySelector(".btn-speak-one").addEventListener("click", () => {
+      unlockAudioSync();
+      speakText(m.text, voice);
+    });
+    box.appendChild(div);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+async function refreshSidebar() {
+  if (!node) return;
+  const [subnets, sessions, petnames] = await Promise.all([
+    Promise.resolve(node.listSubnets ? node.listSubnets() : []),
+    Promise.resolve(node.listSessions ? node.listSessions() : []),
+    Promise.resolve(node.listPetnames ? node.listPetnames() : [])
+  ]);
+  petnamesByPk = Object.fromEntries((petnames || []).map(p => [p.pubkey, p]));
+  renderLists(subnets || [], sessions || [], petnames || []);
+}
+
+async function connectNode() {
+  unlockAudioSync();
+  const api = window.BitechoLightNode;
+  if (!api) {
+    $("api-badge").textContent = "BitechoLightNode script not loaded";
+    return;
+  }
+  $("api-badge").textContent = `BitechoLightNode v${api.apiVersion || "?"} connecting...`;
+  node = api.create ? await api.create({ bootstrapUrl: "https://bitecho.org/devnet/bootstrap.txt" }) : api;
+  if (node.start) await node.start();
+  $("api-badge").textContent = `BitechoLightNode v${api.apiVersion || "1.0.0"} LIVE`;
+  $("api-badge").classList.add("ok");
+  if (unsub) unsub();
+  if (node.onEvent) {
+    unsub = node.onEvent((ev) => {
+      if (ev.type === "message-received" || ev.type === "broadcast-received") {
+        messageLog.push(ev);
+        renderMessages();
+        if ($("chk-auto-tts").checked && ev.text) {
+          const pn = petnamesByPk[ev.from] || {};
+          const name = ev.fromPetname || pn.petname || "";
+          const voice = ev.voiceId || pn.voiceId || DEFAULT_VOICES[name.toLowerCase()] || "af_heart";
+          speakText(ev.text, voice);
+        }
+      }
+    });
+  }
+  await refreshSidebar();
+  $("channel-header").textContent = `Subnet Broadcast: #${activeTarget.id}`;
+}
+
+async function sendCurrentMessage() {
+  const txt = $("msg-input").value;
+  if (!txt.trim() || !node) return;
+  $("msg-input").value = "";
+  const res = activeTarget.kind === "subnet"
+    ? await node.sendBroadcast(activeTarget.id, txt)
+    : await node.sendMessage(activeTarget.id, txt);
+  if (res && res.ok) {
+    messageLog.push({
+      type: activeTarget.kind === "subnet" ? "broadcast-received" : "message-received",
+      subnetId: activeTarget.kind === "subnet" ? activeTarget.id : null,
+      sessionId: activeTarget.kind === "dm" ? activeTarget.id : null,
+      from: "me",
+      fromPetname: "You",
+      color: "#34d399",
+      seq: res.seq,
+      text: txt
+    });
+    renderMessages();
+  }
+}
+
+$("btn-connect").addEventListener("click", connectNode);
+$("btn-send").addEventListener("click", sendCurrentMessage);
+$("msg-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendCurrentMessage();
+  }
+});
+$("btn-save-pn").addEventListener("click", async () => {
+  if (!node || !node.setPetname) return;
+  const pk = $("pn-pubkey").value.trim();
+  const petname = $("pn-name").value.trim();
+  if (!pk || !petname) return;
+  await node.setPetname(pk, { petname, voiceId: $("pn-voice").value, color: $("pn-color").value });
+  await refreshSidebar();
+  renderMessages();
+});
+
+if (window.BitechoLightNode) {
+  $("api-badge").textContent = `BitechoLightNode v${window.BitechoLightNode.apiVersion || "1.0.0"} ready (SRI verified)`;
+  $("api-badge").classList.add("ok");
+}
+renderLists(["bitecho.org/dev", "bitecho.org/team", "bitecho.org/infra"], [], []);
+</script>
+</body>
+</html>

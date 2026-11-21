@@ -267,6 +267,11 @@
               html (if res (slurp res) (slurp "resources/trace_viz/index.html"))]
           (send-response! ex 200 "text/html; charset=utf-8" (.getBytes html "UTF-8")))
 
+        (or (= path "/chat") (= path "/chat.html"))
+        (let [res (io/resource "trace_viz/chat.html")
+              html (if res (slurp res) (slurp "resources/trace_viz/chat.html"))]
+          (send-response! ex 200 "text/html; charset=utf-8" (.getBytes html "UTF-8")))
+
         (= path "/api/petnames")
         (let [body (json/write-str {:petnames (default-petname-voices)})]
           (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
