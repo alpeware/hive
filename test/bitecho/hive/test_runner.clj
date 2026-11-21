@@ -4,6 +4,7 @@
             [bitecho.hive.core-test]
             [bitecho.hive.genesis-test]
             [bitecho.hive.rl-env-test]
+            [bitecho.hive.seed-to-round-test]
             [bitecho.hive.top-loop-test]
             [clojure.test :as t]))
 
@@ -14,7 +15,8 @@
                              'bitecho.hive.arena-bounty-test
                              'bitecho.hive.rl-env-test
                              'bitecho.hive.top-loop-test
-                             'bitecho.hive.genesis-test)]
+                             'bitecho.hive.genesis-test
+                             'bitecho.hive.seed-to-round-test)]
     (shutdown-agents)
     (when (pos? (+ (:fail summary 0) (:error summary 0)))
       (System/exit 1))))
