@@ -204,22 +204,58 @@
         (let [err (json/write-str {:error (.getMessage t)})]
           (send-response! ex 500 "application/json; charset=utf-8" (.getBytes err "UTF-8")))))))
 
+(defn build-standalone-html!
+  "Builds a completely self-contained static HTML file with the petname voice registry
+   and all SHA-256-verified traces (Run-3 & Run-2) inlined into `window.__HIVE_STANDALONE__`,
+   so it renders and plays anywhere with zero backend required."
+  [out-path]
+  (let [res (io/resource "trace_viz/index.html")
+        template (if res (slurp res) (slurp "resources/trace_viz/index.html"))
+        trace-data (into {}
+                         (map (fn [entry]
+                                (let [jsonl (load-verified-trace-jsonl! entry)
+                                      turns (parse-trace-jsonl jsonl)]
+                                  [(:run_id entry)
+                                   {:run_id (:run_id entry)
+                                    :title (:title entry)
+                                    :subtitle (:subtitle entry)
+                                    :jsonl_cid (:jsonl_cid entry)
+                                    :merkle_root (:merkle_root entry)
+                                    :advisory_only true
+                                    :turns turns}]))
+                              trace-catalog))
+        payload-json (-> (json/write-str {:petnames (default-petname-voices)
+                                          :traces (mapv #(dissoc % :local_path) trace-catalog)
+                                          :traceData trace-data})
+                         (str/replace "</" "<\\/"))
+        injection (str "<script>window.__HIVE_STANDALONE__ = " payload-json ";</script>\n<script type=\"module\">")
+        standalone (str/replace-first template "<script type=\"module\">" injection)]
+    (spit out-path standalone)
+    {:path out-path :bytes (count (.getBytes standalone "UTF-8")) :cid (env/sha256-str standalone)}))
+
 (defn start-server!
-  "Starts the Hive Trace Audio Visualizer HTTP server on `port` (default 8787)."
-  ([] (start-server! 8787))
-  ([port]
-   (let [srv (HttpServer/create (InetSocketAddress. "127.0.0.1" (int port)) 0)]
+  "Starts the Hive Trace Audio Visualizer HTTP server on `host:port` (default `0.0.0.0:8787`)."
+  ([] (start-server! "0.0.0.0" 8787))
+  ([port] (start-server! "0.0.0.0" port))
+  ([host port]
+   (let [srv (HttpServer/create (InetSocketAddress. (str host) (int port)) 0)]
      (.createContext srv "/" (reify HttpHandler
                                (handle [_ ex] (handle-request! ex))))
      (.setExecutor srv nil)
      (.start srv)
-     (println (format "[trace-viz] Hive Trace Audio Visualizer running at http://127.0.0.1:%d/" port))
+     (println (format "[trace-viz] Hive Trace Audio Visualizer running at http://%s:%d/" host port))
      srv)))
 
 (defn -main
-  "CLI entrypoint (`clojure -M:trace-viz [--port 8787]`)."
+  "CLI entrypoint (`clojure -M:trace-viz [--host 0.0.0.0] [--port 8787] [--build-standalone path]`)."
   [& args]
-  (let [port-str (some (fn [[k v]] (when (= k "--port") v)) (partition 2 1 args))
-        port (if port-str (Integer/parseInt port-str) 8787)]
-    (start-server! port)
-    @(promise)))
+  (let [arg-map (into {} (map vec (partition 2 1 args)))
+        standalone-out (get arg-map "--build-standalone")]
+    (if standalone-out
+      (do
+        (println "[trace-viz] Built standalone HTML:" (pr-str (build-standalone-html! standalone-out)))
+        (shutdown-agents))
+      (let [host (or (get arg-map "--host") "0.0.0.0")
+            port (if-let [p (get arg-map "--port")] (Integer/parseInt p) 8787)]
+        (start-server! host port)
+        @(promise)))))

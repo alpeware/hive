@@ -321,6 +321,7 @@
 </div>
 
 <script type="module">
+const STANDALONE = window.__HIVE_STANDALONE__ || null;
 const KOKORO_VOICES = [
   "am_michael", "bm_george", "am_adam", "bm_lewis", "af_heart",
   "af_bella", "af_sarah", "af_nova", "am_fenrir", "am_echo", "bf_emma", "bf_isabella"
@@ -622,8 +623,12 @@ async function loadTrace(runId) {
   stopPlayback();
   audioCache.clear();
   setStatus(`Loading verified trace ${runId}...`);
-  const res = await fetch(`/api/trace/${runId}`);
-  currentTrace = await res.json();
+  if (STANDALONE && STANDALONE.traceData && STANDALONE.traceData[runId]) {
+    currentTrace = STANDALONE.traceData[runId];
+  } else {
+    const res = await fetch(`/api/trace/${runId}`);
+    currentTrace = await res.json();
+  }
   $("meta-strip").innerHTML = `
     <span><strong>${currentTrace.title}</strong></span>
     <span>Merkle Root: <code>${(currentTrace.merkle_root || "").slice(0, 16)}…</code></span>
@@ -634,10 +639,15 @@ async function loadTrace(runId) {
 }
 
 async function boot() {
-  const [pRes, tRes] = await Promise.all([fetch("/api/petnames"), fetch("/api/traces")]);
-  petnames = (await pRes.json()).petnames;
+  if (STANDALONE) {
+    petnames = STANDALONE.petnames;
+    tracesCatalog = STANDALONE.traces;
+  } else {
+    const [pRes, tRes] = await Promise.all([fetch("/api/petnames"), fetch("/api/traces")]);
+    petnames = (await pRes.json()).petnames;
+    tracesCatalog = (await tRes.json()).traces;
+  }
   petnameMap = Object.fromEntries(petnames.map(p => [p.id, p]));
-  tracesCatalog = (await tRes.json()).traces;
 
   renderVoiceGrid();
   renderCircle();
