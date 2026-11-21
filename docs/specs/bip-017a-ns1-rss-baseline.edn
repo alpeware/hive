@@ -1,0 +1,15 @@
+{:schema :bitecho/bip-017a-rss-baseline-v1
+ :node "ns1"
+ :measured-at-ms 1795289875000
+ :kernel "6.18.63-gentoo-dist-bin"
+ :node-version "v26.13.1"
+ :bundle-version "0.23.18"
+ :bundle-sha256 "dc2bd448bb8ed7866dd975f6d1d24cfc63866bb585b005f395a9ce2f76c201f9"
+ :pid 4194
+ :vm-rss-kib 396504
+ :vm-hwm-kib 396596
+ :mem-total-kib 963516
+ :mem-available-kib 331372
+ :disk-available-kib 23552268
+ :max-allowed-rss-delta-mib 16
+ :max-concurrency-940mb 3}
