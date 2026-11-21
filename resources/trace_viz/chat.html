@@ -234,6 +234,30 @@
 <div class="main">
   <aside>
     <div>
+      <h2>Anchor Identity &amp; Hardware YubiKey</h2>
+      <div class="rolodex-box">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;">
+          <span id="hw-locked-badge" class="pill warn">LOCKED — Tap Recover</span>
+          <span id="fido-badge" class="pill">YubiKey</span>
+        </div>
+        <div>Addr: <code id="anchor-address">ech1...</code></div>
+        <div>Pubkey: <code id="anchor-pubkey">...</code></div>
+        <select id="key-mode-select" style="width:100%;">
+          <option value="yubikey-discoverable">YubiKey Discoverable (Resident Key Seed)</option>
+          <option value="yubikey-prf">YubiKey PRF Extension</option>
+          <option value="webcrypto-non-extractable">Non-Extractable WebCrypto (P-256)</option>
+        </select>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;">
+          <button id="btn-yk-register" style="flex:1;font-size:0.74rem;padding:5px 7px;">🔑 Register YubiKey</button>
+          <button id="btn-yk-recover" class="primary" style="flex:1;font-size:0.74rem;padding:5px 7px;">🔓 Recover YubiKey</button>
+        </div>
+        <div style="display:flex;gap:5px;">
+          <button id="btn-yk-save" style="flex:1;font-size:0.74rem;padding:5px 7px;">💾 Save Identity</button>
+        </div>
+        <div id="yubikey-status" style="font-size:0.72rem;color:var(--muted);">Ready for WebAuthn hardware key</div>
+      </div>
+    </div>
+    <div>
       <h2>Subnet Broadcasts</h2>
       <div id="subnet-list"></div>
     </div>
@@ -783,6 +807,7 @@ async function connectNode() {
     }
     await refreshSidebar();
     await refreshRolodexStatus();
+    refreshAnchorUI();
     $("channel-header").textContent = `Subnet Broadcast: #${activeTarget.id}`;
   } catch (e) {
     $("api-badge").textContent = `Connect error: ${e.message}`;
@@ -818,6 +843,114 @@ async function sendCurrentMessage() {
     $("tts-status").textContent = `Send rejected: ${err}`;
   }
 }
+
+// ---------------------------------------------------------------------------
+// 1:1 Hardware YubiKey Auth Flow (ported from bitecho.org index.html)
+// ---------------------------------------------------------------------------
+
+function refreshAnchorUI(dashArg) {
+  const browser = globalThis.BitechoBrowser;
+  if (!browser) return;
+  let dash = dashArg;
+  if (!dash && browser.getAnchorDashboard) {
+    try { dash = browser.getAnchorDashboard(); } catch (_) {}
+  }
+  if (!dash) return;
+  const id = dash.identity || {};
+  const addr = id.address || "ech1...";
+  const pk = id["anchor-pubkey"] || id.pubkey || "...";
+  const locked = Boolean(dash["hardware-locked?"] ?? dash.hardwareLocked ?? (id["key-mode"] === "yubikey-discoverable" && !id["unlocked?"]));
+  $("anchor-address").textContent = addr;
+  $("anchor-pubkey").textContent = pk.length > 24 ? `${pk.slice(0, 16)}…${pk.slice(-8)}` : pk;
+  $("hw-locked-badge").textContent = locked ? "LOCKED — Tap Recover" : "UNLOCKED — Ready to Sign";
+  $("hw-locked-badge").className = locked ? "pill warn" : "pill ok";
+  if (id["key-mode"] && $("key-mode-select")) {
+    $("key-mode-select").value = id["key-mode"];
+  }
+  const fido = dash["fido-authenticator"] || {};
+  if (fido["verification-status"]) {
+    $("fido-badge").textContent = fido["verification-status"];
+  }
+}
+
+async function handleRegisterYubiKey() {
+  const browser = globalThis.BitechoBrowser;
+  if (!browser || !browser.createDiscoverableCredential) {
+    $("yubikey-status").textContent = "BitechoBrowser WebAuthn API not loaded";
+    return;
+  }
+  $("yubikey-status").textContent = "Prompting hardware authenticator (WebAuthn create)...";
+  try {
+    const cred = await browser.createDiscoverableCredential();
+    const rec = browser.recoverFromYubiKey(cred);
+    if (!rec || rec.ok === false) {
+      $("yubikey-status").textContent = `Registration failed: ${(rec && (rec["failure-reason"] || rec.error)) || "recovery-failed"}`;
+      return;
+    }
+    const dash = browser.getAnchorDashboard ? browser.getAnchorDashboard() : null;
+    refreshAnchorUI(dash);
+    await refreshSidebar();
+    await refreshRolodexStatus();
+    $("yubikey-status").textContent = "Hardware YubiKey registered & unlocked!";
+  } catch (err) {
+    $("yubikey-status").textContent = `YubiKey register error: ${err.message || err}`;
+  }
+}
+
+async function handleRecoverYubiKey() {
+  const browser = globalThis.BitechoBrowser;
+  if (!browser || !browser.getDiscoverableCredential) {
+    $("yubikey-status").textContent = "BitechoBrowser WebAuthn API not loaded";
+    return;
+  }
+  $("yubikey-status").textContent = "Prompting hardware authenticator (WebAuthn get)...";
+  try {
+    const cred = await browser.getDiscoverableCredential();
+    const rec = browser.recoverFromYubiKey(cred);
+    if (!rec || rec.ok === false) {
+      const failReason = (rec && (rec["failure-reason"] || rec.error)) || "recovery-failed";
+      const failStage = (rec && rec["failure-stage"]) || "unknown";
+      $("yubikey-status").textContent = `Recover failed [${failStage}]: ${failReason}`;
+      return;
+    }
+    const dash = browser.getAnchorDashboard ? browser.getAnchorDashboard() : null;
+    refreshAnchorUI(dash);
+    await refreshSidebar();
+    await refreshRolodexStatus();
+    $("yubikey-status").textContent = "Anchor recovered & unlocked from YubiKey!";
+  } catch (err) {
+    $("yubikey-status").textContent = `YubiKey recover error: ${err.message || err}`;
+  }
+}
+
+async function handleSaveIdentity() {
+  const browser = globalThis.BitechoBrowser;
+  if (!browser || !browser.saveStateToIndexedDB) {
+    $("yubikey-status").textContent = "saveStateToIndexedDB unavailable";
+    return;
+  }
+  try {
+    await Promise.resolve(browser.saveStateToIndexedDB());
+    refreshAnchorUI();
+    $("yubikey-status").textContent = "Saved public identity & address to IndexedDB";
+  } catch (err) {
+    $("yubikey-status").textContent = `Save identity error: ${err.message || err}`;
+  }
+}
+
+$("btn-yk-register").addEventListener("click", handleRegisterYubiKey);
+$("btn-yk-recover").addEventListener("click", handleRecoverYubiKey);
+$("btn-yk-save").addEventListener("click", handleSaveIdentity);
+$("key-mode-select").addEventListener("change", (e) => {
+  const browser = globalThis.BitechoBrowser;
+  if (!browser) return;
+  const mode = e.target.value;
+  if (mode === "yubikey-discoverable" && browser.registerYubiKey) {
+    browser.registerYubiKey();
+  }
+  refreshAnchorUI();
+  $("yubikey-status").textContent = `Key mode set: ${mode}`;
+});
 
 $("btn-connect").addEventListener("click", connectNode);
 $("btn-send").addEventListener("click", sendCurrentMessage);
@@ -861,6 +994,7 @@ if (window.BitechoLightNode) {
   $("api-badge").textContent = `BitechoLightNode v${window.BitechoLightNode.apiVersion || "1.0.0"} ready (${window.BitechoLightNode.version || "0.23.18"}, SRI verified)`;
   $("api-badge").className = "pill ok";
 }
+refreshAnchorUI();
 renderLists(["bitecho.org/dev", "bitecho.org/team", "bitecho.org/infra"], [], []);
 </script>
 </body>

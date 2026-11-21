@@ -18,7 +18,7 @@
             [einsum.models.kokoro :as kokoro])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
            [java.io ByteArrayOutputStream]
-           [java.net InetSocketAddress URI]))
+           [java.net HttpURLConnection InetSocketAddress URI]))
 
 ;; ---------------------------------------------------------------------------
 ;; Pure Core: Petname Voice Registry, Sanitization & Trace Parsing
@@ -274,6 +274,73 @@
     (with-open [os (.getResponseBody ex)]
       (.write os body))))
 
+(def ^:private upstream-relay-origins
+  ["https://ns2.bitecho.org"
+   "https://ns1.bitecho.org"
+   "https://bitecho.org"])
+
+(defn- read-stream-bytes
+  ^bytes [is]
+  (if (nil? is)
+    (byte-array 0)
+    (with-open [in is
+                baos (ByteArrayOutputStream.)]
+      (io/copy in baos)
+      (.toByteArray baos))))
+
+(defn- proxy-relay-request!
+  "Fetch-through proxy for `/relay/v1/*` (GET/POST/OPTIONS) preserving query string,
+   request body, Content-Type, and upstream HTTP status so the browser bundle on
+   `http://<lan>:8787/chat` never hits 404 or cross-origin CORS blocks."
+  [^HttpExchange ex]
+  (let [method (.getRequestMethod ex)]
+    (if (= method "OPTIONS")
+      (let [hdrs (.getResponseHeaders ex)]
+        (.set hdrs "Access-Control-Allow-Origin" "*")
+        (.set hdrs "Access-Control-Allow-Methods" "GET, POST, OPTIONS")
+        (.set hdrs "Access-Control-Allow-Headers" "Content-Type, Authorization")
+        (.sendResponseHeaders ex 204 -1)
+        (.close ex))
+      (let [uri (.getRequestURI ex)
+            path (.getRawPath uri)
+            query (.getRawQuery uri)
+            suffix (if (str/blank? query) path (str path "?" query))
+            req-ct (.getFirst (.getRequestHeaders ex) "Content-Type")
+            req-body (if (#{"POST" "PUT"} method)
+                       (read-stream-bytes (.getRequestBody ex))
+                       nil)
+            res (loop [origins upstream-relay-origins
+                       last-err nil]
+                  (if-let [origin (first origins)]
+                    (let [attempt (try
+                                    (let [^HttpURLConnection conn
+                                          (.openConnection (.toURL (URI. (str origin suffix))))]
+                                      (.setRequestMethod conn method)
+                                      (.setConnectTimeout conn 8000)
+                                      (.setReadTimeout conn 15000)
+                                      (when req-ct
+                                        (.setRequestProperty conn "Content-Type" req-ct))
+                                      (when (and req-body (pos? (alength req-body)))
+                                        (.setDoOutput conn true)
+                                        (with-open [os (.getOutputStream conn)]
+                                          (.write os req-body)))
+                                      (let [code (.getResponseCode conn)
+                                            ct (or (.getContentType conn) "application/json; charset=utf-8")
+                                            body (if (< code 400)
+                                                   (read-stream-bytes (.getInputStream conn))
+                                                   (read-stream-bytes (.getErrorStream conn)))]
+                                        {:ok? true :status code :content-type ct :body body}))
+                                    (catch Throwable t
+                                      {:ok? false :error (.getMessage t)}))]
+                      (if (:ok? attempt)
+                        attempt
+                        (recur (rest origins) (:error attempt))))
+                    {:ok? false :error (or last-err "relay-proxy-unreachable")}))]
+        (if (:ok? res)
+          (send-response! ex (:status res) (:content-type res) (:body res))
+          (send-response! ex 502 "application/json; charset=utf-8"
+                          (.getBytes (json/write-str {:ok false :error (:error res)}) "UTF-8")))))))
+
 (defn- handle-request!
   [^HttpExchange ex]
   (let [path (.getPath (.getRequestURI ex))]
@@ -283,6 +350,9 @@
         (do
           (.sendResponseHeaders ex 204 -1)
           (.close ex))
+
+        (str/starts-with? path "/relay/v1/")
+        (proxy-relay-request! ex)
 
         (= path "/api/bitecho-browser.js")
         (send-response! ex 200 "application/javascript; charset=utf-8"
