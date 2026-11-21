@@ -201,10 +201,11 @@
                      :latency-ms 0}
                     (let [prompt (build-seat-turn-prompt (:text values-art) (get seat-prompts actor) obs)
                           _ (println (format "[twin-runner] R%d/%s -> %s (%s)..." rnd (name stage) (name actor) model))
+                          bwrap? (bwrap/bwrap-available?)
                           res (bwrap/invoke-agy-turn! {:model-selector model
                                                        :prompt prompt
                                                        :timeout-ms 90000
-                                                       :use-bwrap? false})
+                                                       :use-bwrap? bwrap?})
                           lat-ms (long (/ (- (System/nanoTime) t0) 1e6))
                           raw (if (:ok? res)
                                 (:stdout res)
@@ -234,7 +235,7 @@
                                am-res (bwrap/invoke-agy-turn! {:model-selector (get seat-models :simon)
                                                                :prompt am-prompt
                                                                :timeout-ms 90000
-                                                               :use-bwrap? false})
+                                                               :use-bwrap? (bwrap/bwrap-available?)})
                                am-ms (long (/ (- (System/nanoTime) t-am) 1e6))
                                rewritten (if (and (:ok? am-res) (not (str/blank? (:stdout am-res))))
                                            (:stdout am-res)
@@ -321,8 +322,10 @@
                  :scenario-id (:scenario-id trace-v2)
                  :base-repo-hash base-repo-hash
                  :live-agy-models? true
-                 :bwrap-enforced? false
-                 :bwrap-note "Host missing sys-apps/bubblewrap; Phase 1 ran read-only prompt-only turns without tools, Phase 2 ran on isolated /tmp disposable git clone."
+                 :bwrap-enforced? (boolean (bwrap/bwrap-available?))
+                 :bwrap-note (if (bwrap/bwrap-available?)
+                               "Bubblewrap (bwrap) sandbox enforced on host."
+                               "Host missing sys-apps/bubblewrap; fallback to isolated /tmp disposable git clone.")
                  :design-note-cid "a5ad135a823a0d2d0e92d3e094a5f18b2e9ccbdd392cfb6d6aa47eac6a8b13f3"
                  :status (:status out)
                  :rounds-executed (:round out)

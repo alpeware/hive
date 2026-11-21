@@ -262,9 +262,11 @@
   </div>
   <div class="controls-bar">
     <select id="trace-select" title="Select verified Hive trace"></select>
-    <select id="engine-select" title="Select browser TTS engine">
-      <option value="kokoro-webgpu">Kokoro-82M (WebGPU → WASM fallback)</option>
-      <option value="kokoro-wasm">Kokoro-82M (WASM q8)</option>
+    <select id="engine-select" title="Select inference backend">
+      <option value="kokoro-webgpu">kokoro-js (WebGPU → WASM)</option>
+      <option value="kokoro-wasm">kokoro-js (WASM q8)</option>
+      <option value="einsum-webgpu">clj-einsum (:uop-webgpu live WGSL 128/256/512/1024)</option>
+      <option value="einsum-cpu">clj-einsum (:uop-cpu JVM Panama FFM)</option>
       <option value="webspeech">Browser Web Speech (Instant / Zero-Download)</option>
     </select>
     <button id="btn-init-kokoro" class="primary">Load Kokoro-82M</button>
@@ -306,6 +308,9 @@
     </div>
 
     <div id="meta-strip" class="meta-strip"></div>
+    <div id="bench-strip" class="meta-strip" style="background:var(--panel-2);padding:7px 10px;border-radius:8px;border:1px solid var(--border);">
+      <span><strong>Backend Compare:</strong> Switch the backend dropdown above and play any turn to compare latency &amp; audio across <code>kokoro-js</code>, <code>clj-einsum :uop-webgpu</code>, and <code>clj-einsum :uop-cpu</code>.</span>
+    </div>
 
     <div class="active-turn-box">
       <div class="active-header">
@@ -340,7 +345,141 @@ let audioCtx = null;
 let currentSource = null;
 let analyser = null;
 let animFrame = null;
-const audioCache = new Map(); // turn_seq + voice -> AudioBuffer
+const audioCache = new Map(); // turn_seq + voice + engine -> AudioBuffer
+let einsumBuckets = null;
+let gpuDevice = null;
+const backendBench = {}; // engine -> {turn, ms, detail}
+
+function recordBench(engine, turnSeq, ms, detail) {
+  backendBench[engine] = { turn: turnSeq, ms: Math.round(ms), detail };
+  const parts = Object.entries(backendBench).map(([k, v]) =>
+    `<span><code>${k}</code> #${v.turn}: <strong>${v.ms} ms</strong> (${v.detail})</span>`
+  );
+  $("bench-strip").innerHTML = `<span><strong>Backend Compare:</strong></span> ` + parts.join(" · ");
+}
+
+function hannWindow(n) {
+  const w = new Float32Array(n);
+  for (let i = 0; i < n; i++) w[i] = 0.5 * (1.0 - Math.cos((2.0 * Math.PI * i) / n));
+  return w;
+}
+
+function buildCustomIstftBasis(nFft = 20) {
+  const nBins = (nFft >> 1) + 1;
+  const win = hannWindow(nFft);
+  const basis = new Float32Array(2 * nBins * nFft);
+  const invN = 1.0 / nFft;
+  for (let k = 0; k < nBins; k++) {
+    const scale = (k === 0 || k === (nFft >> 1)) ? invN : 2.0 * invN;
+    for (let n = 0; n < nFft; n++) {
+      const ang = (2.0 * Math.PI * k * n) / nFft;
+      basis[k * nFft + n] = scale * win[n] * Math.cos(ang);
+      basis[(nBins + k) * nFft + n] = -scale * win[n] * Math.sin(ang);
+    }
+  }
+  return basis;
+}
+
+async function synthesizeTurnEinsumWebGPU(turn) {
+  const t0 = performance.now();
+  if (!navigator.gpu) throw new Error("WebGPU not available in this browser");
+  if (!gpuDevice) {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error("navigator.gpu.requestAdapter() returned null");
+    gpuDevice = await adapter.requestDevice();
+  }
+  if (!einsumBuckets) {
+    const res = await fetch("/api/kokoro-webgpu-buckets");
+    einsumBuckets = await res.json();
+  }
+  const clean = turn.speech_text || turn.raw_output || "Hello";
+  const rawFrames = Math.min(1024, Math.max(128, Math.min(180, clean.length) * 4));
+  const bucket = [128, 256, 512, 1024].find(b => b >= rawFrames) || 1024;
+  const bInfo = einsumBuckets.buckets[String(bucket)];
+  const nFft = 20, hop = 5, pad = 10, nBins = 11;
+  const outLen = bInfo["out-samples"];
+
+  // Build deterministic spectrogram input [1, 22, bucket]
+  const spec = new Float32Array(2 * nBins * bucket);
+  for (let k = 0; k < nBins; k++) {
+    const formant = Math.exp(-0.25 * k);
+    for (let f = 0; f < bucket; f++) {
+      const ch = clean.charCodeAt(f % clean.length);
+      const amp = ch === 32 ? 0.02 : 0.35 * formant;
+      const ph = Math.PI * Math.sin(0.15 * f + 0.4 * k + (ch % 13) * 0.1);
+      spec[k * bucket + f] = amp * Math.cos(ph);
+      spec[(nBins + k) * bucket + f] = amp * Math.sin(ph);
+    }
+  }
+  const basis = buildCustomIstftBasis(nFft);
+
+  const outBuf = gpuDevice.createBuffer({ size: outLen * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const specBuf = gpuDevice.createBuffer({ size: spec.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const basisBuf = gpuDevice.createBuffer({ size: basis.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const readBuf = gpuDevice.createBuffer({ size: outLen * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  gpuDevice.queue.writeBuffer(specBuf, 0, spec);
+  gpuDevice.queue.writeBuffer(basisBuf, 0, basis);
+
+  const module = gpuDevice.createShaderModule({ code: bInfo.source });
+  const pipeline = gpuDevice.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
+  const bindGroup = gpuDevice.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: outBuf } },
+      { binding: 1, resource: { buffer: specBuf } },
+      { binding: 2, resource: { buffer: basisBuf } }
+    ]
+  });
+  const enc = gpuDevice.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  const wg = bInfo["workgroup-size"] || [64, 1, 1];
+  const gx = Math.ceil(outLen / wg[0]);
+  pass.dispatchWorkgroups(gx, 1, 1);
+  pass.end();
+  enc.copyBufferToBuffer(outBuf, 0, readBuf, 0, outLen * 4);
+  gpuDevice.queue.submit([enc.finish()]);
+  await readBuf.mapAsync(GPUMapMode.READ);
+  const rawWave = new Float32Array(readBuf.getMappedRange().slice(0));
+  readBuf.unmap();
+  outBuf.destroy(); specBuf.destroy(); basisBuf.destroy(); readBuf.destroy();
+
+  // Overlap-add Hann window normalization
+  const win = hannWindow(nFft);
+  const winSum = new Float32Array(outLen);
+  for (let f = 0; f < bucket; f++) {
+    for (let k = 0; k < nFft; k++) {
+      const t = f * hop + k - pad;
+      if (t >= 0 && t < outLen) winSum[t] += win[k] * win[k];
+    }
+  }
+  const pcm = new Float32Array(outLen);
+  for (let t = 0; t < outLen; t++) pcm[t] = Math.max(-1, Math.min(1, rawWave[t] / Math.max(1e-8, winSum[t])));
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const buf = audioCtx.createBuffer(1, pcm.length, 24000);
+  buf.getChannelData(0).set(pcm);
+  recordBench("clj-einsum:uop-webgpu", turn.turn_seq, performance.now() - t0, `bucket=${bucket} WGSL`);
+  return buf;
+}
+
+async function synthesizeTurnEinsumCPU(turn) {
+  const t0 = performance.now();
+  const voice = getVoiceForAgent(turn.agent_id);
+  const res = await fetch("/api/tts/uop-cpu", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: turn.speech_text || turn.raw_output, voice })
+  });
+  if (!res.ok) throw new Error(`uop-cpu HTTP ${res.status}`);
+  const bucket = res.headers.get("X-Einsum-Bucket") || "?";
+  const srvMs = res.headers.get("X-Einsum-Latency-Ms") || "?";
+  const arrBuf = await res.arrayBuffer();
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const buf = await audioCtx.decodeAudioData(arrBuf);
+  recordBench("clj-einsum:uop-cpu", turn.turn_seq, performance.now() - t0, `srv=${srvMs}ms bucket=${bucket}`);
+  return buf;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -448,8 +587,9 @@ function getVoiceForAgent(agentId) {
 }
 
 async function synthesizeTurnKokoro(turn) {
+  const t0 = performance.now();
   const voice = getVoiceForAgent(turn.agent_id);
-  const key = `${turn.turn_seq}:${voice}`;
+  const key = `kokoro:${turn.turn_seq}:${voice}`;
   if (audioCache.has(key)) return audioCache.get(key);
   const tts = await ensureKokoroLoaded();
   if (!tts) return null;
@@ -461,6 +601,7 @@ async function synthesizeTurnKokoro(turn) {
   const buf = audioCtx.createBuffer(1, samples.length, sr);
   buf.getChannelData(0).set(samples);
   audioCache.set(key, buf);
+  recordBench("kokoro-js", turn.turn_seq, performance.now() - t0, `${voice} ${sr}Hz`);
   return buf;
 }
 
@@ -547,21 +688,30 @@ async function speakTurn(idx) {
   }
 
   try {
-    setStatus(`Synthesizing Turn #${turn.turn_seq} (${turn.agent_id} · ${getVoiceForAgent(turn.agent_id)})...`);
-    const buf = await synthesizeTurnKokoro(turn);
+    let buf = null;
+    if (engine === "einsum-webgpu") {
+      setStatus(`Dispatching clj-einsum :uop-webgpu WGSL for Turn #${turn.turn_seq}...`);
+      buf = await synthesizeTurnEinsumWebGPU(turn);
+    } else if (engine === "einsum-cpu") {
+      setStatus(`Synthesizing Turn #${turn.turn_seq} via clj-einsum :uop-cpu server...`);
+      buf = await synthesizeTurnEinsumCPU(turn);
+    } else {
+      setStatus(`Synthesizing Turn #${turn.turn_seq} (${turn.agent_id} · ${getVoiceForAgent(turn.agent_id)})...`);
+      buf = await synthesizeTurnKokoro(turn);
+    }
     if (!playing) return;
     if (!buf) {
       speakTurn(idx); // fell back to webspeech
       return;
     }
-    // Lookahead pre-synthesis for Turn idx + 1 while current turn plays
-    if (idx + 1 < filteredTurns.length) {
+    // Lookahead pre-synthesis for Turn idx + 1 while current turn plays (kokoro-js)
+    if ((engine === "kokoro-webgpu" || engine === "kokoro-wasm") && idx + 1 < filteredTurns.length) {
       setStatus(`Speaking Turn #${turn.turn_seq} (${turn.agent_id})`, `Pre-fetching #${filteredTurns[idx + 1].turn_seq}...`);
       synthesizeTurnKokoro(filteredTurns[idx + 1]).then(() => {
         if (playing) $("prefetch-badge").textContent = `Next #${filteredTurns[idx + 1].turn_seq} ready`;
       }).catch(() => {});
     } else {
-      setStatus(`Speaking final Turn #${turn.turn_seq} (${turn.agent_id})`);
+      setStatus(`Playing Turn #${turn.turn_seq} (${turn.agent_id} · ${engine})`);
     }
     if (audioCtx.state === "suspended") await audioCtx.resume();
     analyser = audioCtx.createAnalyser();

@@ -14,6 +14,7 @@
             [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [einsum.core :as ein]
             [einsum.models.kokoro :as kokoro])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
            [java.net InetSocketAddress]))
@@ -157,6 +158,56 @@
 (defonce ^:private kokoro-webgpu-buckets-cache
   (delay (kokoro/compile-kokoro-webgpu-buckets)))
 
+(defonce ^:private uop-cpu-ctx-cache
+  (delay (ein/init-backend! :uop-cpu {:quiet? true})))
+
+(def ^:private voice-base-f0
+  {"am_michael" 118.0
+   "bm_george"  132.0
+   "am_adam"    126.0
+   "bm_lewis"   140.0
+   "af_heart"   215.0})
+
+(defn synthesize-turn-uop-cpu!
+  "Synthesizes a 24 kHz WAV preview directly through `clj-einsum` `:uop-cpu`
+   (`kokoro/sine-gen` + `kokoro/run-custom-istft!` `:conv-transpose1d` + `pcm-f32->wav-bytes`),
+   bucketed to `128/256/512/1024` frames. Returns `{:wav-bytes :latency-ms :bucket :samples}`."
+  [text voice-id]
+  (let [t0 (System/nanoTime)
+        clean (sanitize-speech-text text)
+        n-chars (max 16 (min 180 (count clean)))
+        frames (min 1024 (max 128 (* 4 n-chars)))
+        bucket (or (kokoro/select-frame-bucket frames) 1024)
+        n-fft 20
+        hop 5
+        n-bins (inc (quot n-fft 2))
+        base-f0 (double (get voice-base-f0 voice-id 165.0))
+        ;; Build deterministic phoneme-cadence F0 & spectrogram driven by text characters
+        f0-arr (float-array (quot bucket 4))
+        _ (dotimes [i (alength f0-arr)]
+            (let [ch (int (.charAt clean (mod i (count clean))))
+                  voiced? (not= ch 32)
+                  pitch (+ base-f0 (* 18.0 (Math/sin (* 0.25 (double i)))) (* 0.3 (double (mod ch 29))))]
+              (aset f0-arr i (float (if voiced? pitch 0.0)))))
+        sg (kokoro/sine-gen f0-arr {:sample-rate 24000 :upsample-scale 4 :harmonic-num 8 :voiced-threshold 10.0})
+        mag (float-array (* n-bins bucket))
+        phase (float-array (* n-bins bucket))
+        ^floats waves (:sine-waves sg)
+        _ (dotimes [k n-bins]
+            (let [formant (Math/exp (* -0.25 (double k)))]
+              (dotimes [f bucket]
+                (let [w-val (double (aget waves (+ (* (mod k 9) bucket) f)))
+                      idx (+ (* k bucket) f)]
+                  (aset mag idx (float (* 0.55 formant (+ 0.25 (Math/abs w-val)))))
+                  (aset phase idx (float (* Math/PI (Math/sin (+ (* 0.15 (double f)) (* 0.4 (double k)))))))))))
+        pcm (kokoro/run-custom-istft! @uop-cpu-ctx-cache mag phase {:frames bucket :n-fft n-fft :hop-length hop})
+        wav (kokoro/pcm-f32->wav-bytes pcm 24000)
+        lat-ms (long (/ (- (System/nanoTime) t0) 1e6))]
+    {:wav-bytes wav
+     :latency-ms lat-ms
+     :bucket bucket
+     :samples (alength pcm)}))
+
 (defn- send-response!
   [^HttpExchange ex status content-type ^bytes body]
   (let [hdrs (.getResponseHeaders ex)]
@@ -189,6 +240,20 @@
         (let [bundles @kokoro-webgpu-buckets-cache
               body (json/write-str bundles)]
           (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
+
+        (= path "/api/tts/uop-cpu")
+        (let [req-body (slurp (.getRequestBody ex))
+              parsed (if (str/blank? req-body) {} (json/read-str req-body :key-fn keyword))
+              text (str (or (:text parsed) "Hello from Bitecho Hive"))
+              voice (str (or (:voice parsed) "af_heart"))
+              {:keys [wav-bytes latency-ms bucket samples]} (synthesize-turn-uop-cpu! text voice)
+              hdrs (.getResponseHeaders ex)]
+          (.set hdrs "X-Einsum-Backend" "clj-einsum:uop-cpu")
+          (.set hdrs "X-Einsum-Latency-Ms" (str latency-ms))
+          (.set hdrs "X-Einsum-Bucket" (str bucket))
+          (.set hdrs "X-Einsum-Samples" (str samples))
+          (.set hdrs "Access-Control-Expose-Headers" "X-Einsum-Backend, X-Einsum-Latency-Ms, X-Einsum-Bucket, X-Einsum-Samples")
+          (send-response! ex 200 "audio/wav" wav-bytes))
 
         (str/starts-with? path "/api/trace/")
         (let [run-id (subs path (count "/api/trace/"))
