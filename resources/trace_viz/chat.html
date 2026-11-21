@@ -263,6 +263,12 @@
     </div>
     <div>
       <h2>Direct Sessions (DM)</h2>
+      <div style="display:flex;gap:5px;margin-bottom:6px;">
+        <input id="dm-target-input" placeholder="Petname (axiom, nexus) or pubkey" style="flex:1;font-size:0.75rem;padding:5px 7px;" />
+        <button id="btn-open-dm" class="primary" style="font-size:0.74rem;padding:5px 8px;">Open DM</button>
+      </div>
+      <div id="dm-action-status" style="font-size:0.72rem;color:var(--muted);margin-bottom:6px;"></div>
+      <div id="pending-offers-list" style="margin-bottom:6px;"></div>
       <div id="session-list"></div>
     </div>
     <div>
@@ -694,8 +700,23 @@ function renderLists(subnets, sessions, petnames) {
   $("petname-list").innerHTML = petnames.map(p => {
     const col = p.color || colorForKey(p.petname || p.pubkey);
     const v = p.voiceId || DEFAULT_VOICES[(p.petname || "").toLowerCase()] || "af_heart";
-    return `<div class="list-item" style="cursor:default;"><span><span class="dot" style="background:${col}"></span><strong>${p.petname}</strong></span><span style="font-size:0.74rem;color:var(--muted);">${v}</span></div>`;
+    return `<div class="list-item" style="cursor:default;gap:4px;">
+      <span><span class="dot" style="background:${col}"></span><strong>${p.petname}</strong></span>
+      <span style="display:flex;align-items:center;gap:4px;">
+        <span style="font-size:0.7rem;color:var(--muted);">${v}</span>
+        <button class="btn-pn-dm" data-target="${p.petname || p.pubkey}" style="padding:2px 6px;font-size:0.7rem;">DM</button>
+      </span>
+    </div>`;
   }).join("") || `<div style="font-size:0.78rem;color:var(--muted);">No petnames saved yet</div>`;
+
+  document.querySelectorAll(".btn-pn-dm").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDmSession(btn.dataset.target);
+    });
+  });
+
+  renderPendingOffers();
 
   document.querySelectorAll(".list-item[data-kind]").forEach(el => {
     el.addEventListener("click", () => {
@@ -975,7 +996,12 @@ async function handleRecoverYubiKey() {
     await refreshNodeBadge();
     await refreshSidebar();
     await refreshRolodexStatus();
-    $("yubikey-status").textContent = "Anchor recovered from YubiKey, saved & synced!";
+    const stAfter = (window.BitechoLightNode && window.BitechoLightNode.getStatus) ? await window.BitechoLightNode.getStatus() : {};
+    const anchorPk = dash && dash.identity && dash.identity["anchor-pubkey"];
+    const synced = anchorPk && stAfter && stAfter.pubkey === anchorPk;
+    $("yubikey-status").textContent = synced
+      ? `Anchor recovered & active on node (${anchorPk.slice(0, 12)}…)`
+      : `Anchor recovered (card=${String(anchorPk || "").slice(0, 10)}… / node=${String(stAfter.pubkey || "").slice(0, 10)}…)`;
   } catch (err) {
     $("yubikey-status").textContent = `YubiKey recover error: ${err.message || err}`;
   }
@@ -1008,6 +1034,85 @@ $("key-mode-select").addEventListener("change", (e) => {
   }
   refreshAnchorUI();
   $("yubikey-status").textContent = `Key mode set: ${mode}`;
+});
+
+function openDmSession(targetRaw) {
+  const target = String(targetRaw || "").trim();
+  if (!target) return;
+  const browser = globalThis.BitechoBrowser;
+  if (!browser || typeof browser.openChannel !== "function") {
+    $("dm-action-status").textContent = "openChannel API unavailable on BitechoBrowser";
+    return;
+  }
+  try {
+    $("dm-action-status").textContent = `Sending signed offer to ${target}...`;
+    const res = browser.openChannel(target);
+    const sid = (res && (res.sessionId || res.session_id || res["session-id"])) || "";
+    if (res && res.ok === false) {
+      $("dm-action-status").textContent = `Offer failed: ${res.error || "unknown"}`;
+    } else {
+      $("dm-action-status").textContent = sid ? `Offer sent to ${target} (${sid.slice(0, 10)}…)` : `Offer sent to ${target}`;
+      if (sid) {
+        activeTarget = { kind: "dm", id: sid };
+        $("channel-header").textContent = `DM Session: ${target} (${sid.slice(0, 12)}…)`;
+      }
+      refreshSidebar();
+      renderMessages();
+    }
+  } catch (e) {
+    $("dm-action-status").textContent = `Offer error: ${e.message || e}`;
+  }
+}
+
+function renderPendingOffers() {
+  const box = $("pending-offers-list");
+  if (!box) return;
+  const browser = globalThis.BitechoBrowser;
+  if (!browser) { box.innerHTML = ""; return; }
+  const st = browser.getStatus ? browser.getStatus() : {};
+  const dash = browser.getAnchorDashboard ? browser.getAnchorDashboard() : {};
+  const rawChan = st.pendingOffers || st["pending-offers"] || {};
+  const rawAnchor = dash.pendingOffers || dash["pending-offers"] || {};
+  const chanList = Array.isArray(rawChan) ? rawChan : Object.values(rawChan);
+  const anchorList = Array.isArray(rawAnchor) ? rawAnchor : Object.values(rawAnchor);
+  const all = [...chanList, ...anchorList].filter(Boolean);
+  if (!all.length) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = all.map((off, idx) => {
+    const id = off.offerHash || off["offer-hash"] || off.id || off["offer-id"] || `offer-${idx}`;
+    const caller = off.callerPetname || off.caller || off["caller-pubkey"] || "peer";
+    const label = String(caller).length > 16 ? `${String(caller).slice(0, 12)}…` : caller;
+    return `<div class="list-item" style="background:rgba(245,158,11,0.12);border-color:rgba(245,158,11,0.4);cursor:default;">
+      <span style="font-size:0.76rem;">Offer from <strong>${label}</strong></span>
+      <button class="btn-accept-offer primary" data-idx="${idx}" style="padding:2px 7px;font-size:0.72rem;">✅ Accept</button>
+    </div>`;
+  }).join("");
+  box.querySelectorAll(".btn-accept-offer").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const off = all[Number(btn.dataset.idx)];
+      if (!off) return;
+      try {
+        let res;
+        if ((off.offerHash || off["offer-hash"] || off.signature) && typeof browser.acceptOffer === "function") {
+          res = browser.acceptOffer(off);
+        } else if (typeof browser.approveOffer === "function") {
+          res = browser.approveOffer(off.id || off["offer-id"] || off.offerHash);
+        }
+        $("dm-action-status").textContent = (res && res.ok === false)
+          ? `Accept failed: ${res.error || "rejected"}`
+          : "Offer accepted!";
+        refreshSidebar();
+      } catch (e) {
+        $("dm-action-status").textContent = `Accept error: ${e.message || e}`;
+      }
+    });
+  });
+}
+
+$("btn-open-dm").addEventListener("click", () => {
+  openDmSession($("dm-target-input").value);
 });
 
 $("btn-connect").addEventListener("click", connectNode);
@@ -1075,6 +1180,7 @@ if (globalThis.BitechoBrowser) {
     b.onStateChange((st) => {
       refreshNodeBadge(st);
       refreshAnchorUI(b.getAnchorDashboard ? b.getAnchorDashboard() : null);
+      renderPendingOffers();
     });
   }
 }
