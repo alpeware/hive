@@ -243,11 +243,21 @@
               next-browser (max 2 (long (Math/round (* (double next-fleet)
                                                        0.45
                                                        (double (:browser-node-boost scenario))))))
-              ;; Protocol revenue R_t (signaling burns + 50 bps sci settlement takes), 100% burned
+              ;; Protocol revenue R_t (signaling burns + tau_bps sci settlement takes), 100% burned
+              k-bps (long (min 5000 (max 0 (long (or (:k-bps scenario) 5000)))))
+              tau-bps (long (min 200 (max 0 (long (or (:tau-bps scenario) 50)))))
+              tau-take-mult (/ (double tau-bps) 50.0)
+              ;; Mild volume elasticity: lower take slightly encourages volume; higher take slightly dampens it
+              tau-elasticity (cond
+                               (< tau-bps 50) 1.08
+                               (> tau-bps 50) (max 0.70 (- 1.0 (* 0.0024 (double (- tau-bps 50)))))
+                               :else 1.0)
               demand-shock (+ 0.72 (* 0.56 u-demand))
               growth-pow (Math/pow (double (:sci-growth-rate scenario)) (double (min m 24)))
               fleet-factor (/ (double (+ next-fleet next-browser)) 10.0)
               r-raw (long (Math/floor (* (double (:base-monthly-sci-burn scenario))
+                                         tau-take-mult
+                                         tau-elasticity
                                          growth-pow
                                          fleet-factor
                                          demand-shock
@@ -257,8 +267,8 @@
               trailing-rev (if (empty? rev-hist)
                              0
                              (long (quot (reduce + 0 (take-last 2 rev-hist)) 2)))
-              ;; Demand-gated mint M_t <= floor(0.5 * R_trailing), capped by unminted conditional supply
-              m-cap (long (Math/floor (* 0.5 (double trailing-rev))))
+              ;; Demand-gated mint M_t <= floor((k_bps/10000) * R_trailing), capped by unminted conditional supply
+              m-cap (long (Math/floor (* (/ (double k-bps) 10000.0) (double trailing-rev))))
               m-minted (min (long (:unminted-conditional st)) m-cap)
               ;; Year-3 hard sunset burn at Month 36 (epoch 26,280)
               b-after-draw (- (long (:bootstrap-locked st)) b-draw)
@@ -439,3 +449,93 @@
      :selected-future selected
      :surprising-findings surprises
      :ensemble-root-cid root-cid}))
+
+(def ^:private core-4-scenario-ids
+  #{:v2.1-extension-heavy :v2.1-high-velocity-fleet :v2.1-baseline :v2.1-sla-strict-angels})
+
+(defn run-sensitivity-sweep
+  "Sweep #2: Granular sensitivity sweep over `k_bps x tau_bps x anchor-availability`
+   across the 4 core Tokenomics v2.1 scenarios, explicitly interrogating:
+   (1) The `2-of-2` vs `2-of-3` human-anchor availability phase-transition cliff;
+   (2) The Month ~13-15 deflationary crossover across `(k_bps, tau_bps)` regimes."
+  [{:keys [seed trials-per-cell k-bps-grid tau-bps-grid anchor-grid]
+    :or {seed BIP009-THETA-SEED
+         trials-per-cell 50
+         k-bps-grid [2500 3500 5000]
+         tau-bps-grid [25 50 100]
+         anchor-grid [0.50 0.70 0.85 0.95]}}]
+  (let [n (long trials-per-cell)
+        base-scenarios (vec (filter #(contains? core-4-scenario-ids (:scenario-id %))
+                                    (v21-vesting-scenarios)))
+        cells
+        (vec
+         (for [[s-idx sc] (map-indexed vector base-scenarios)
+               [k-idx k-bps] (map-indexed vector k-bps-grid)
+               [t-idx tau-bps] (map-indexed vector tau-bps-grid)
+               [a-idx anchor-p] (map-indexed vector anchor-grid)]
+           (let [sc' (assoc sc :k-bps k-bps :tau-bps tau-bps :anchor-availability anchor-p)
+                 cell-offset (+ (* (long s-idx) 100003) (* (long k-idx) 10007) (* (long t-idx) 1009) (* (long a-idx) 97))
+                 trajs (mapv (fn [t]
+                               (simulate-seed-to-round-trajectory
+                                sc'
+                                (+ (mod (long seed) 1000000) cell-offset (long t))))
+                             (range n))
+                 qualified (count (filter :a-round-qualified? trajs))
+                 defl-months (keep :first-deflationary-month trajs)]
+             {:scenario-id (:scenario-id sc)
+              :k-bps k-bps
+              :tau-bps tau-bps
+              :anchor-availability anchor-p
+              :trials n
+              :a-round-path-likelihood (/ (double qualified) (double n))
+              :all-trials-conserved? (every? :all-months-conserved? trajs)
+              :mean-anchor-bottleneck-months (mean-num (map :anchor-bottleneck-months trajs))
+              :mean-final-fleet (mean-num (map :final-fleet-nodes trajs))
+              :mean-final-circulating (mean-num (map :final-circulating trajs))
+              :deflationary-crossover-rate (/ (double (count defl-months)) (double n))
+              :mean-deflationary-month (when (seq defl-months) (mean-num defl-months))})))
+        ;; Interrogation 1: 2-of-2 (:v2.1-sla-strict-angels) vs 2-of-3 (:v2.1-baseline & :v2.1-extension-heavy)
+        ;; at ratified (k-bps=5000, tau-bps=50) across anchor-availability
+        ratified-cells (filter #(and (= 5000 (:k-bps %)) (= 50 (:tau-bps %))) cells)
+        anchor-cliff
+        {:at-ratified-k5000-tau50
+         (into (sorted-map)
+               (for [a anchor-grid]
+                 [a (into (sorted-map)
+                          (for [c (filter #(= a (:anchor-availability %)) ratified-cells)]
+                            [(:scenario-id c)
+                             {:a-round-path-likelihood (:a-round-path-likelihood c)
+                              :mean-anchor-bottleneck-months (:mean-anchor-bottleneck-months c)
+                              :mean-final-fleet (:mean-final-fleet c)}]))]))}
+        ;; Interrogation 2: Deflationary crossover across (k-bps, tau-bps) at anchor-availability=0.85
+        defl-cells (filter #(= 0.85 (:anchor-availability %)) cells)
+        defl-interrogation
+        {:at-anchor-0.85
+         (vec
+          (for [k k-bps-grid
+                tau tau-bps-grid]
+            (let [cs (filter #(and (= k (:k-bps %)) (= tau (:tau-bps %))) defl-cells)
+                  months (keep :mean-deflationary-month cs)]
+              {:k-bps k
+               :tau-bps tau
+               :mean-crossover-rate (mean-num (map :deflationary-crossover-rate cs))
+               :mean-crossover-month (when (seq months) (mean-num months))
+               :mean-a-round-likelihood (mean-num (map :a-round-path-likelihood cs))
+               :mean-final-circulating (mean-num (map :mean-final-circulating cs))})))}
+        sweep-root-cid (env/sha256-str (pr-str {:spec-cid genesis/GENESIS-SPEC-CID
+                                                :theta-anchor-seed BIP009-THETA-SEED
+                                                :seed seed
+                                                :trials-per-cell n
+                                                :anchor-cliff anchor-cliff
+                                                :defl-interrogation defl-interrogation}))]
+    {:spec-cid genesis/GENESIS-SPEC-CID
+     :theta-anchor-seed BIP009-THETA-SEED
+     :seed seed
+     :trials-per-cell n
+     :total-grid-cells (count cells)
+     :total-trajectories (* (count cells) n)
+     :all-cells-conserved? (every? :all-trials-conserved? cells)
+     :grid-cells cells
+     :anchor-cliff-interrogation anchor-cliff
+     :deflationary-crossover-interrogation defl-interrogation
+     :sweep-root-cid sweep-root-cid}))

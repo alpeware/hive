@@ -65,6 +65,23 @@
                        (= max-p (:a-round-path-likelihood best))
                        (seq (:surprising-findings r1))))))
 
+(defspec ^{:doc "Parameterized k_bps (<= 5000), tau_bps (<= 200), and anchor-availability preserve 42B conservation and k_bps mint cap."}
+  prop-sensitivity-sweep-conservation-and-bounds 35
+  (prop/for-all [k-bps (gen/elements [1000 2500 3500 5000])
+                 tau-bps (gen/elements [10 25 50 100 200])
+                 anchor-p (gen/elements [0.50 0.70 0.85 0.95])
+                 seed (gen/choose 1 100000)]
+                (let [base (first (s2r/v21-vesting-scenarios))
+                      sc (assoc base :k-bps k-bps :tau-bps tau-bps :anchor-availability anchor-p)
+                      traj (s2r/simulate-seed-to-round-trajectory sc seed)
+                      k-frac (/ (double k-bps) 10000.0)]
+                  (and (true? (:all-months-conserved? traj))
+                       (every? (fn [m]
+                                 (and (= s2r/HARD-CAP-ECHO (s2r/sum-supply-buckets m))
+                                      (<= (long (:minted-this-month m))
+                                          (long (Math/floor (* k-frac (double (:trailing-burned-revenue m))))))))
+                               (:monthly-trace traj))))))
+
 (deftest unit-overnight-v21-ensemble-granularity-and-surprises
   (testing "Full 6-scenario x 50-trial ensemble produces granular metrics, surprises, and valid root CID"
     (let [res (s2r/run-seed-to-round-ensemble {:seed 1795112000 :trials-per-scenario 50})]
@@ -74,4 +91,14 @@
       (is (string? (:ensemble-root-cid res)))
       (is (= 64 (count (:ensemble-root-cid res))))
       (is (>= (count (:surprising-findings res)) 4))
-      (is (some? (get-in res [:selected-future :scenario-id]))))))
+      (is (some? (get-in res [:selected-future :scenario-id])))))
+
+  (testing "Sweep #2 sensitivity grid interrogates 2-of-2 anchor cliff and deflationary crossover deterministically"
+    (let [s1 (s2r/run-sensitivity-sweep {:seed 1795112000 :trials-per-cell 10})
+          s2 (s2r/run-sensitivity-sweep {:seed 1795112000 :trials-per-cell 10})]
+      (is (= s1 s2))
+      (is (= 144 (count (:grid-cells s1))))
+      (is (every? :all-trials-conserved? (:grid-cells s1)))
+      (is (map? (:anchor-cliff-interrogation s1)))
+      (is (map? (:deflationary-crossover-interrogation s1)))
+      (is (= 64 (count (:sweep-root-cid s1)))))))
