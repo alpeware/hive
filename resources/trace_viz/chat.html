@@ -765,9 +765,33 @@ async function refreshRolodexStatus() {
   }
 }
 
+async function refreshNodeBadge(stArg) {
+  const api = window.BitechoLightNode;
+  const browser = globalThis.BitechoBrowser;
+  let st = stArg;
+  if (!st && browser && browser.getStatus) {
+    try { st = browser.getStatus(); } catch (_) {}
+  }
+  if (!st && api && api.getStatus) {
+    try { st = await api.getStatus(); } catch (_) {}
+  }
+  if (!st) return;
+  const pk = st.pubkey || st.peerId || "";
+  const bal = st.balance ?? 0;
+  if (pk) {
+    $("node-id-badge").style.display = "inline-block";
+    $("node-id-badge").textContent = `pubkey: ${pk.slice(0, 12)}… · bal: ${Number(bal).toLocaleString()} ECH`;
+  }
+  if (st.meshConnected) {
+    $("api-badge").textContent = `BitechoLightNode v${(api && api.apiVersion) || "1.0.0"} CONNECTED (${(api && api.version) || "0.23.18"})`;
+    $("api-badge").className = "pill ok";
+  }
+}
+
 async function connectNode() {
   unlockAudioSync();
   const api = window.BitechoLightNode;
+  const browser = globalThis.BitechoBrowser;
   if (!api) {
     $("api-badge").textContent = "BitechoLightNode script not loaded";
     $("api-badge").className = "pill warn";
@@ -776,18 +800,22 @@ async function connectNode() {
   $("api-badge").textContent = `BitechoLightNode v${api.apiVersion || "1.0.0"} connecting...`;
   try {
     node = api;
-    if (api.initNode) {
-      await api.initNode({ subnetId: "bitecho.org/dev" });
+    // IMPORTANT: Never call initNode() if already booted / restored from IndexedDB or YubiKey,
+    // because initNode() generates a fresh ephemeral keypair and clobbers the Anchor Identity!
+    const existing = (browser && browser.getStatus) ? browser.getStatus() : (api.getStatus ? await api.getStatus() : null);
+    if (!existing || !existing.pubkey) {
+      if (browser && browser.initNode) browser.initNode({ subnetId: "bitecho.org/dev" });
+      else if (api.initNode) await api.initNode({ subnetId: "bitecho.org/dev" });
     }
-    if (api.reconnect) {
+    if (browser && browser.connectMesh) {
+      browser.connectMesh();
+    } else if (api.reconnect) {
       await api.reconnect({ subnetId: "bitecho.org/dev" });
     }
-    const status = api.getStatus ? await api.getStatus() : {};
-    const pk = status.pubkey || status.peerId || "";
-    if (pk) {
-      $("node-id-badge").style.display = "inline-block";
-      $("node-id-badge").textContent = `pubkey: ${pk.slice(0, 12)}… · bal: ${status.balance ?? 0}`;
+    if (api.exec) {
+      try { await api.exec("sync-account", {}); } catch (_) {}
     }
+    await refreshNodeBadge();
     $("api-badge").textContent = `BitechoLightNode v${api.apiVersion || "1.0.0"} LIVE (${api.version || "0.23.18"})`;
     $("api-badge").className = "pill ok";
     if (unsub) unsub();
@@ -888,10 +916,17 @@ async function handleRegisterYubiKey() {
       return;
     }
     const dash = browser.getAnchorDashboard ? browser.getAnchorDashboard() : null;
+    if (browser.saveStateToIndexedDB) {
+      try { await Promise.resolve(browser.saveStateToIndexedDB()); } catch (_) {}
+    }
+    if (window.BitechoLightNode && window.BitechoLightNode.exec) {
+      try { await window.BitechoLightNode.exec("sync-account", {}); } catch (_) {}
+    }
     refreshAnchorUI(dash);
+    await refreshNodeBadge();
     await refreshSidebar();
     await refreshRolodexStatus();
-    $("yubikey-status").textContent = "Hardware YubiKey registered & unlocked!";
+    $("yubikey-status").textContent = "Hardware YubiKey registered, saved to IndexedDB & synced!";
   } catch (err) {
     $("yubikey-status").textContent = `YubiKey register error: ${err.message || err}`;
   }
@@ -914,10 +949,17 @@ async function handleRecoverYubiKey() {
       return;
     }
     const dash = browser.getAnchorDashboard ? browser.getAnchorDashboard() : null;
+    if (browser.saveStateToIndexedDB) {
+      try { await Promise.resolve(browser.saveStateToIndexedDB()); } catch (_) {}
+    }
+    if (window.BitechoLightNode && window.BitechoLightNode.exec) {
+      try { await window.BitechoLightNode.exec("sync-account", {}); } catch (_) {}
+    }
     refreshAnchorUI(dash);
+    await refreshNodeBadge();
     await refreshSidebar();
     await refreshRolodexStatus();
-    $("yubikey-status").textContent = "Anchor recovered & unlocked from YubiKey!";
+    $("yubikey-status").textContent = "Anchor recovered from YubiKey, saved & synced!";
   } catch (err) {
     $("yubikey-status").textContent = `YubiKey recover error: ${err.message || err}`;
   }
@@ -991,10 +1033,35 @@ $("btn-rolodex-verify").addEventListener("click", async () => {
 });
 
 if (window.BitechoLightNode) {
+  node = window.BitechoLightNode;
   $("api-badge").textContent = `BitechoLightNode v${window.BitechoLightNode.apiVersion || "1.0.0"} ready (${window.BitechoLightNode.version || "0.23.18"}, SRI verified)`;
   $("api-badge").className = "pill ok";
 }
-refreshAnchorUI();
+if (globalThis.BitechoBrowser) {
+  const b = globalThis.BitechoBrowser;
+  if (b.initNode) b.initNode({ subnetId: "bitecho.org/dev" });
+  const initialDash = b.initAnchor ? b.initAnchor() : null;
+  refreshAnchorUI(initialDash);
+  refreshNodeBadge();
+  if (typeof b.loadStateFromIndexedDB === "function") {
+    Promise.resolve(b.loadStateFromIndexedDB()).then(async (restored) => {
+      const restoredPub = restored && (restored.pubkey || (restored["light-state"] && restored["light-state"].pubkey));
+      if (restoredPub) {
+        $("yubikey-status").textContent = "Restored saved identity from IndexedDB (tap Recover YubiKey to unlock signing)";
+      }
+      refreshAnchorUI(b.getAnchorDashboard ? b.getAnchorDashboard() : null);
+      await refreshNodeBadge();
+      await refreshSidebar();
+      await refreshRolodexStatus();
+    }).catch(() => {});
+  }
+  if (typeof b.onStateChange === "function") {
+    b.onStateChange((st) => {
+      refreshNodeBadge(st);
+      refreshAnchorUI(b.getAnchorDashboard ? b.getAnchorDashboard() : null);
+    });
+  }
+}
 renderLists(["bitecho.org/dev", "bitecho.org/team", "bitecho.org/infra"], [], []);
 </script>
 </body>
