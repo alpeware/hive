@@ -29,6 +29,10 @@
   "Simon's simple real proposal for Run-1 closed-loop acceptance."
   "Adopt the digital-twin circle as a standing advisory first-review step for BIPs in the builders-stewards circle: before a real Stage 1 round, the twin circle runs the closed-loop simulation (consent sim, implementation on a copy, in-memory proof + chaos runs) and publishes the chained trace; the real circle reviews the trace as its first read. Simulated outcomes remain advisory; all real gates unchanged.")
 
+(def ^:const RUN-2-PROPOSAL-TEXT
+  "Simon's Run-2 proposal: Contact Book (Petname Rolodex) + Circles + Human Anchor + Encrypted Hash-Linked Memory Backup."
+  "Implement the Memento Agent Continuity & Circles architecture across Bitecho and Mealy: (1) Self-signed Petname Address Book (Rolodex) export/import in the light-node CLI/core, storing per-entry {:petname :pubkey :allowed-actions} as periodic FULL snapshots with CRDT-style map DELTAS in between so an agent recursively rebuilds the full address book by folding deltas onto the latest snapshot and verifying its own Ed25519 signature on cold wake. (2) Circles modeled as mutual address-book subgraphs, requiring an explicit :human-anchor on real-world-twin circles and inheriting :human-anchor down to subcircles. (3) Encrypted Hash-Linked Memory Backup in network CAS storage where each encrypted memory Blob carries the 64-char CID pointer of the previous memory (enabling a blank-waking agent to walk backwards clue-to-clue from its Memento note), the genesis memory is the signature of the agent's own pubkey, and the private key is NEVER stored on the network. All changes keep a pure Sans-IO .cljc core, strict test.check invariants, and real Stage 2 review gates.")
+
 (def read-only-tools
   "Tools permitted in `:review` mode (read-only codebase inspection)."
   #{:read-file :grep :list-dir :git-log :git-show})
@@ -337,29 +341,34 @@
         verdicts (:round-verdicts env-state)
         cur-round (long (:round env-state))]
     (cond
-      ;; Fixed Point 1: zero new objections and zero unresolved amendments
-      (and (empty? objs) (empty? adds))
-      (let [receipt-body {:simulation? true
+      ;; Fixed Point 1 (D41): zero paramount objections and either zero addenda OR non-blocking
+      ;; addenda carried explicitly into :open-addenda after an amendment pass / at round limit.
+      (and (empty? objs)
+           (or (empty? adds)
+               (> cur-round 1)
+               (>= cur-round max-rounds)))
+      (let [carried-addenda (into (:open-addenda env-state) adds)
+            receipt-body {:simulation? true
                           :advisory-only true
                           :proposal-cid (:proposal-cid env-state)
                           :round cur-round
                           :verdicts verdicts
                           :standing-objections []
-                          :open-addenda (:open-addenda env-state)}
+                          :open-addenda carried-addenda}
             receipt (assoc receipt-body :receipt-cid (sha256-str (pr-str receipt-body)))]
         [(assoc env-state
                 :status :fixed-point-1
                 :sim-consent-receipt receipt
-                :standing-objections [])
+                :standing-objections []
+                :open-addenda carried-addenda)
          [[:emit-sim-consent-receipt receipt]]])
 
-      ;; Round limit hit -> :unresolved with standing objections
+      ;; Round limit hit with standing paramount objections -> :unresolved
       (>= cur-round max-rounds)
-      (let [standing (if (seq objs) objs [{:reason :unresolved-addenda :addenda adds}])]
-        [(assoc env-state
-                :status :unresolved
-                :standing-objections standing)
-         [[:diagnose {:reason :review-round-limit-unresolved :round cur-round :objections (count standing)}]]])
+      [(assoc env-state
+              :status :unresolved
+              :standing-objections objs)
+       [[:diagnose {:reason :review-round-limit-unresolved :round cur-round :objections (count objs)}]]]
 
       ;; Otherwise shape proposal via amendment loop and begin next review round
       :else

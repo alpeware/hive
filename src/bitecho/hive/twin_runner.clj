@@ -134,18 +134,34 @@
          "You are rewriting the proposal after Round feedback so it resolves EVERY paramount objection and addendum flag concretely.\n\n"
          "Previous Proposal:\n" current-proposal "\n\n"
          "Circle Objections, Addenda & Reactions:\n" feedback "\n\n"
-         "Task: Output ONLY the complete, rewritten, self-contained proposal text (1-2 tight paragraphs, concrete and bounded: name the specific pilot BIP e.g. next scheduled BIP, specify exact baseline metrics and kill criteria, affirm pure Sans-IO + advisory-only boundary + zero real-gate changes). Do NOT include meta-commentary or invoke tools.")))
+         "Task: Output ONLY the complete, rewritten, self-contained proposal text (1-2 tight paragraphs, concrete and bounded: directly resolve every paramount objection and addendum flag with exact invariants, failure modes, and boundaries; affirm pure Sans-IO .cljc core + advisory-only boundary + real Stage 2 review gates). Do NOT include meta-commentary or invoke tools.")))
 
 (defn run-live-run-1!
-  "Executes live 5-seat Run-1b closed-loop simulation via `agy --print` across all 5
-   heterogeneous models with real LLM proposer-amendment rewrites in `:amendment-loop`,
+  "Executes live 5-seat closed-loop simulation (`live-run-1b` or `live-run-2`) via `agy --print`
+   across all 5 heterogeneous models with real LLM proposer-amendment rewrites in `:amendment-loop`,
    runs disposable-copy Phase 2 patch + verification, scores via SCI, and writes
    verified R-3 artifacts to `out-dir`."
-  [{:keys [seed out-dir max-review-rounds run-id]
-    :or {seed 20261120 out-dir "/tmp/hive-live-run1b" max-review-rounds 3 run-id "live-run-1b"}}]
+  [{:keys [seed out-dir max-review-rounds run-id proposal-id proposal-text vector-model]
+    :or {seed 20261120
+         out-dir "/tmp/hive-live-run2"
+         max-review-rounds 3
+         run-id "live-run-2"
+         proposal-id "PROP-RUN-2-MEMENTO-CIRCLES"
+         proposal-text env/RUN-2-PROPOSAL-TEXT
+         vector-model "gemini-4-carbon-medium"}}]
   (.mkdirs (io/file out-dir))
-  (let [spec (-> (env/run-1-scenario-spec seed)
-                 (assoc :scenario/id (str "governance-closed-loop-" run-id))
+  (let [base-spec (env/run-1-scenario-spec seed)
+        seats (mapv (fn [s]
+                      (if (= :vector (:seat-id s))
+                        (assoc s :model-selector vector-model)
+                        s))
+                    (:scenario/seats base-spec))
+        spec (-> base-spec
+                 (assoc :scenario/id (str "governance-closed-loop-" run-id)
+                        :scenario/seats seats
+                        :scenario/proposal {:proposal/id proposal-id
+                                            :proposal/cid (env/sha256-str proposal-text)
+                                            :proposal/text proposal-text})
                  (assoc-in [:scenario/limits :max-review-rounds] max-review-rounds))
         values-art (fetch-verified-artifact! {:cid env/VALUES-DRAFT-CID})
         seat-prompts (into {}
@@ -239,7 +255,7 @@
                 _ (bwrap/run-command-vec! ["git" "-C" copy-dir "add" "docs/twin-circle-advisory-policy.md"])
                 diff-res (bwrap/run-command-vec! ["git" "-C" copy-dir "diff" "--cached"])
                 patch-text (:stdout diff-res)
-                _ (spit (io/file out-dir "run1-live.patch") patch-text)
+                _ (spit (io/file out-dir (str run-id ".patch")) patch-text)
                 [st-patch _] (env/step st-p2 :vector
                                        {:action/type :protocol-act
                                         :action/content "Generated advisory policy patch inside disposable copy."
