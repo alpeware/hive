@@ -18,11 +18,94 @@
             [einsum.models.kokoro :as kokoro])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
            [java.io ByteArrayOutputStream]
-           [java.net HttpURLConnection InetSocketAddress URI]))
+           [java.net HttpURLConnection InetSocketAddress URI]
+           [java.nio.charset StandardCharsets]
+           [java.nio.file Files]
+           [java.security MessageDigest]
+           [java.util Base64]))
 
 ;; ---------------------------------------------------------------------------
-;; Pure Core: Petname Voice Registry, Sanitization & Trace Parsing
+;; Pure Core: Petname Voice Registry, Sanitization, SRI & HTML Validation
 ;; ---------------------------------------------------------------------------
+
+(def browser-bundle-sri
+  "Pinned SHA-384 SRI for `bitecho-browser.js` v0.23.19 (CID ecf56ca5...)."
+  "sha384-xz3vl27CBqKMBOVMkuIM62Gq93H7zMhor9oXUMoi6PRWrUHQXDEE0rIE8zxF5/sL")
+
+(defn sha256-bytes
+  "Pure SHA-256 hex digest of a byte array."
+  ^String [^bytes bs]
+  (let [md (MessageDigest/getInstance "SHA-256")
+        digest (.digest md bs)]
+    (apply str (map #(format "%02x" (bit-and % 0xff)) digest))))
+
+(defn sha384-sri
+  "Pure Subresource Integrity (`sha384-<base64>`) digest of a byte array."
+  ^String [^bytes bs]
+  (let [md (MessageDigest/getInstance "SHA-384")
+        digest (.digest md bs)]
+    (str "sha384-" (.encodeToString (Base64/getEncoder) digest))))
+
+(defn validate-html-scripts
+  "Pure BIP-017b HTML validator asserting:
+   1. ZERO inline `<script>` tags (every `<script>` must have `src` and empty body).
+   2. ZERO `cdn.jsdelivr.net` or `/api/bitecho-browser.js` references.
+   3. Every `<script src=\"./...\">` carries an `integrity=\"sha384-...\"` matching
+      `expected-sri-by-src` when supplied."
+  [html expected-sri-by-src]
+  (let [s (str html)
+        script-re #"(?is)<script\b([^>]*)>(.*?)</script>"
+        matches (re-seq script-re s)
+        errors (atom [])
+        scripts (atom [])]
+    (when (str/includes? s "cdn.jsdelivr.net")
+      (swap! errors conj {:kind :external-cdn :message "Forbidden cdn.jsdelivr.net reference"}))
+    (when (str/includes? s "/api/bitecho-browser.js")
+      (swap! errors conj {:kind :proxy-shim :message "Forbidden /api/bitecho-browser.js proxy reference"}))
+    (doseq [[_ attrs body] matches]
+      (let [src (second (re-find #"(?i)\bsrc\s*=\s*\"([^\"]+)\"" attrs))
+            integrity (second (re-find #"(?i)\bintegrity\s*=\s*\"([^\"]+)\"" attrs))
+            trimmed-body (str/trim (str body))]
+        (swap! scripts conj {:src src :integrity integrity})
+        (when (or (str/blank? src) (not (str/blank? trimmed-body)))
+          (swap! errors conj {:kind :inline-script
+                              :src src
+                              :message "Inline <script> tag or non-empty script body is forbidden"}))
+        (when (and src (str/includes? src "cdn.jsdelivr.net"))
+          (swap! errors conj {:kind :external-cdn :src src}))
+        (when (and src (contains? expected-sri-by-src src))
+          (let [expected (get expected-sri-by-src src)]
+            (when (not= expected integrity)
+              (swap! errors conj {:kind :sri-mismatch
+                                  :src src
+                                  :expected expected
+                                  :actual integrity}))))))
+    {:ok? (empty? @errors)
+     :errors @errors
+     :scripts @scripts}))
+
+(defn render-production-chat-html
+  "Pure transform turning dev `chat.html` into zero-proxy production `index.html`
+   for `bitecho.org/app/` with exact SHA-384 SRI pins and `./trace-viz.html` nav link."
+  [chat-html chat-js-sri]
+  (-> (str chat-html)
+      (str/replace "src=\"/api/bitecho-browser.js\"" "src=\"./bitecho-browser.js\"")
+      (str/replace "<script type=\"module\" src=\"/chat.js\"></script>"
+                   (str "<script type=\"module\" src=\"./chat.js\" integrity=\""
+                        chat-js-sri
+                        "\" crossorigin=\"anonymous\"></script>"))
+      (str/replace "href=\"/\"" "href=\"./trace-viz.html\"")))
+
+(defn render-production-trace-viz-html
+  "Pure transform turning dev `index.html` into zero-proxy production `trace-viz.html`
+   for `bitecho.org/app/` with exact SHA-384 SRI pin and `./index.html` nav link."
+  [trace-viz-html trace-viz-js-sri]
+  (-> (str trace-viz-html)
+      (str/replace "<script type=\"module\" src=\"/trace-viz.js\"></script>"
+                   (str "<script type=\"module\" src=\"./trace-viz.js\" integrity=\""
+                        trace-viz-js-sri
+                        "\" crossorigin=\"anonymous\"></script>"))
+      (str/replace "href=\"/chat\"" "href=\"./index.html\"")))
 
 (defn default-petname-voices
   "Petname entries for the 5-member Bitecho builders-stewards circle, including
@@ -378,6 +461,16 @@
               html (if res (slurp res) (slurp "resources/trace_viz/chat.html"))]
           (send-response! ex 200 "text/html; charset=utf-8" (.getBytes html "UTF-8")))
 
+        (= path "/chat.js")
+        (let [res (io/resource "trace_viz/chat.js")
+              js (if res (slurp res) (slurp "resources/trace_viz/chat.js"))]
+          (send-response! ex 200 "application/javascript; charset=utf-8" (.getBytes js "UTF-8")))
+
+        (= path "/trace-viz.js")
+        (let [res (io/resource "trace_viz/trace-viz.js")
+              js (if res (slurp res) (slurp "resources/trace_viz/trace-viz.js"))]
+          (send-response! ex 200 "application/javascript; charset=utf-8" (.getBytes js "UTF-8")))
+
         (= path "/api/petnames")
         (let [body (json/write-str {:petnames (default-petname-voices)})]
           (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
@@ -428,13 +521,20 @@
         (let [err (json/write-str {:error (.getMessage t)})]
           (send-response! ex 500 "application/json; charset=utf-8" (.getBytes err "UTF-8")))))))
 
+(defn- read-trace-viz-resource
+  ^String [rel-name]
+  (let [res (io/resource (str "trace_viz/" rel-name))]
+    (if res
+      (slurp res)
+      (slurp (str "resources/trace_viz/" rel-name)))))
+
 (defn build-standalone-html!
   "Builds a completely self-contained static HTML file with the petname voice registry
    and all SHA-256-verified traces (Run-3 & Run-2) inlined into `window.__HIVE_STANDALONE__`,
    so it renders and plays anywhere with zero backend required."
   [out-path]
-  (let [res (io/resource "trace_viz/index.html")
-        template (if res (slurp res) (slurp "resources/trace_viz/index.html"))
+  (let [template (read-trace-viz-resource "index.html")
+        viz-js (read-trace-viz-resource "trace-viz.js")
         trace-data (into {}
                          (map (fn [entry]
                                 (let [jsonl (load-verified-trace-jsonl! entry)
@@ -452,10 +552,68 @@
                                           :traces (mapv #(dissoc % :local_path) trace-catalog)
                                           :traceData trace-data})
                          (str/replace "</" "<\\/"))
-        injection (str "<script>window.__HIVE_STANDALONE__ = " payload-json ";</script>\n<script type=\"module\">")
-        standalone (str/replace-first template "<script type=\"module\">" injection)]
+        injection (str "<script>window.__HIVE_STANDALONE__ = " payload-json ";</script>\n"
+                       "<script type=\"module\">\n" viz-js "\n</script>")
+        standalone (str/replace-first template "<script type=\"module\" src=\"/trace-viz.js\"></script>" injection)]
     (spit out-path standalone)
     {:path out-path :bytes (count (.getBytes standalone "UTF-8")) :cid (env/sha256-str standalone)}))
+
+(defn build-web-app!
+  "Builds the zero-proxy production `bitecho.org/app/` static web app bundle into `out-dir`:
+   - `index.html` (Hive Live Chat UI with exact SHA-384 SRI pins, ZERO inline scripts, ZERO `/api/` proxy URLs)
+   - `chat.js` (externalized zero-CDN module using `BitechoLightNode` v1.1.0 + OPFS chunked loader)
+   - `trace-viz.html` (5-Seat Trace Visualizer with exact SHA-384 SRI pin, ZERO inline scripts)
+   - `trace-viz.js` (externalized zero-CDN module)
+   - `release-assets.edn` (exact SHA-256 CID, byte size, `media-type`, and `sha384-...` SRI for every emitted file)."
+  [out-dir]
+  (let [dir (io/file out-dir)
+        _ (.mkdirs dir)
+        chat-html-raw (read-trace-viz-resource "chat.html")
+        chat-js-raw (read-trace-viz-resource "chat.js")
+        viz-html-raw (read-trace-viz-resource "index.html")
+        viz-js-raw (read-trace-viz-resource "trace-viz.js")
+        chat-js-bytes (.getBytes chat-js-raw StandardCharsets/UTF_8)
+        viz-js-bytes (.getBytes viz-js-raw StandardCharsets/UTF_8)
+        chat-js-sri (sha384-sri chat-js-bytes)
+        viz-js-sri (sha384-sri viz-js-bytes)
+        index-html (render-production-chat-html chat-html-raw chat-js-sri)
+        trace-viz-html (render-production-trace-viz-html viz-html-raw viz-js-sri)
+        val-index (validate-html-scripts index-html {"./bitecho-browser.js" browser-bundle-sri
+                                                     "./chat.js" chat-js-sri})
+        val-viz (validate-html-scripts trace-viz-html {"./trace-viz.js" viz-js-sri})]
+    (when-not (:ok? val-index)
+      (throw (ex-info "Production index.html failed BIP-017b script/SRI validation" val-index)))
+    (when-not (:ok? val-viz)
+      (throw (ex-info "Production trace-viz.html failed BIP-017b script/SRI validation" val-viz)))
+    (let [index-bytes (.getBytes index-html StandardCharsets/UTF_8)
+          viz-bytes (.getBytes trace-viz-html StandardCharsets/UTF_8)
+          files [[:index-html "index.html" "text/html; charset=utf-8" index-bytes]
+                 [:chat-js "chat.js" "application/javascript; charset=utf-8" chat-js-bytes]
+                 [:trace-viz-html "trace-viz.html" "text/html; charset=utf-8" viz-bytes]
+                 [:trace-viz-js "trace-viz.js" "application/javascript; charset=utf-8" viz-js-bytes]]
+          assets (reduce
+                  (fn [acc [k fname media-type ^bytes bs]]
+                    (let [f (io/file dir fname)]
+                      (Files/write (.toPath f) bs (make-array java.nio.file.OpenOption 0))
+                      (assoc acc k {:file fname
+                                    :cid (sha256-bytes bs)
+                                    :size (alength bs)
+                                    :media-type media-type
+                                    :sri (sha384-sri bs)})))
+                  {}
+                  files)
+          release-assets {:schema :bitecho/hive-web-app-assets-v1
+                          :browser-bundle-sri browser-bundle-sri
+                          :assets assets}
+          manifest-str (str (pr-str release-assets) "\n")
+          manifest-bytes (.getBytes manifest-str StandardCharsets/UTF_8)
+          manifest-file (io/file dir "release-assets.edn")]
+      (Files/write (.toPath manifest-file) manifest-bytes (make-array java.nio.file.OpenOption 0))
+      {:ok? true
+       :out-dir (.getAbsolutePath dir)
+       :manifest-path (.getAbsolutePath manifest-file)
+       :manifest-cid (sha256-bytes manifest-bytes)
+       :assets assets})))
 
 (defn start-server!
   "Starts the Hive Trace Audio Visualizer HTTP server on `host:port` (default `0.0.0.0:8787`)."
@@ -471,14 +629,23 @@
      srv)))
 
 (defn -main
-  "CLI entrypoint (`clojure -M:trace-viz [--host 0.0.0.0] [--port 8787] [--build-standalone path]`)."
+  "CLI entrypoint (`clojure -M:trace-viz [--host 0.0.0.0] [--port 8787] [--build-standalone path] [--build-web-app out-dir]`)."
   [& args]
   (let [arg-map (into {} (map vec (partition 2 1 args)))
-        standalone-out (get arg-map "--build-standalone")]
-    (if standalone-out
+        standalone-out (get arg-map "--build-standalone")
+        web-app-out (get arg-map "--build-web-app")]
+    (cond
+      web-app-out
+      (do
+        (println "[trace-viz] Built production web app:" (pr-str (build-web-app! web-app-out)))
+        (shutdown-agents))
+
+      standalone-out
       (do
         (println "[trace-viz] Built standalone HTML:" (pr-str (build-standalone-html! standalone-out)))
         (shutdown-agents))
+
+      :else
       (let [host (or (get arg-map "--host") "0.0.0.0")
             port (if-let [p (get arg-map "--port")] (Integer/parseInt p) 8787)]
         (start-server! host port)

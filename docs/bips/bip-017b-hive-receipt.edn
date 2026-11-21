@@ -1,0 +1,30 @@
+{:schema :bitecho/bip-landing-receipt-v1
+ :bip-id "BIP-017b"
+ :repo "alpeware/hive"
+ :status :landed
+ :precondition-gate {:bip-017a-soak-receipt-cid "2ecc673dec5c4cc072ec91d614b2b4d85119b67a51d6682254b54faf8d37dd7b"
+                     :consecutive-epochs 154}
+ :anchors {:shaped-draft-1-cid "77f9f93aa766a86ca5aa7ed04c79ea9d7887aa0ad974e566161ae467aaa85413"
+           :twin-circle-trace-cid "ef480aa10425265e93e415af092c2c6c673ced83059c8f8a597e7d63215467ff"
+           :twin-circle-merkle-root "410048ac1e6667fbd3ac3f4a9b471defcb991438f72caba11212b9134b1ae6eb"
+           :hive-stage2-patch-cid "887d1ea1c7ad2c556c4e856763e743739b1897574a6132965e4adec8e9494ca3"
+           :hive-stage2-telemetry-cid "86f2c3301ef1ef64d64432f6fc2ef21e0ddeeb1f52b807730f23c16a893d9a19"
+           :bitecho-main-commit "63ad31c5114b3b1b363cc513af37bf253c90d7c7"
+           :bitecho-receipt-cid "d8c0d3ca715f41e4012e8b0859ddf3cf9a7910a4818c48312eb17b968ac5c0da"}
+ :real-stage-2-consent {:quorum "5/5"
+                        :members ["simon" "axiom" "nexus" "vector" "lumen"]
+                        :advisory-sim-separated? true}
+ :release-assets {:index-html {:cid "a5e0ab512a677a0a733431869c2780d98d610ee8bdf19ee1aac848839988083b" :size 12142}
+                  :chat-js {:cid "2da47e3c0d85acb6c620d7dec264d1c3d2ae94246fbb343b5fc2b710bc5c11bd" :size 40653 :sri "sha384-jCrMqP5PupLuE6TCOdqwZpdtoGhNV2o7MKGsLWW3QHvVzGbKUHIQCBjoeOW8uMH6"}
+                  :trace-viz-html {:cid "488d11af85dcbbfa98562a2822552d39fa0bf1549f95bcb053b1dfad2fb81489" :size 9931}
+                  :trace-viz-js {:cid "c4a9a7bcbcb3f99982a50a71f1e5202b91f10bbaaa0718b797dfe271f70419ca" :size 22626 :sri "sha384-VRztOhn+uJWtrWsIXjzOJ7FMKBniYW+cfuOdhyE1tchX6EDFWFxpo6EZgZpJKqAE"}
+                  :bitecho-browser-js {:cid "ecf56ca59ef8a4bfec0684372688aebb24324be1bc6b502f9b9e1bd840539531" :size 1585353 :sri "sha384-xz3vl27CBqKMBOVMkuIM62Gq93H7zMhor9oXUMoi6PRWrUHQXDEE0rIE8zxF5/sL"}}
+ :gates {:format-ok? true
+         :lint-errors 0
+         :lint-warnings 0
+         :trace-viz-tests {:tests 5 :assertions 57 :failures 0 :errors 0}
+         :chrome-156-cdp {:csp-violations 0
+                          :console-errors 0
+                          :cross-origin-isolated? true
+                          :af-heart-opfs-blob-sha256 "2c1c733b0e6576c810e268d3e440c21dea4e0f0131a3ba4cfc98d7fe6136d094"
+                          :js-heap-delta-mib -0.546}}}
