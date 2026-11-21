@@ -1,0 +1,38 @@
+{:schema :bitecho/bip-017a-soak-exit-receipt-v1
+ :bip-id "BIP-017a"
+ :version "0.23.19"
+ :full-node-bundle-sha256 "e3694722e372f42f50c20a75dcc50cef5d2bce3a1e70f9ee02891f9797a020c9"
+ :light-node-bundle-sha256 "0d5e9998157e40761263892f54ba94e03e01d76f6649eeaf4c4e0ed24e00ef4f"
+ :browser-bundle-sha256 "ecf56ca59ef8a4bfec0684372688aebb24324be1bc6b502f9b9e1bd840539531"
+ :receipt-cid "99780163a3c4bb193191baf4ebbdc174b7b0720ccc1f2d7f5f955c60200f73ba"
+ :ns1-baseline-cid "95e682856a4c9f6a4ca0d79df845ae7b0c2b60585cba7ec0d46f83fe3fe3e416"
+ :soak-window {:start-finalized-epoch 69506
+               :exit-finalized-epoch 69660
+               :exit-head-epoch 69662
+               :consecutive-epochs 154
+               :required-epochs 144
+               :passed? true}
+ :fleet-sla {:version-converged? true
+             :nodes-reporting ["node1" "node2" "node3" "ns1" "ns2" "ns3"]
+             :service-downtime-ms 0
+             :service-availability 1
+             :edge-availability 1
+             :consensus-availability 1
+             :six-nines-met? true
+             :unexplained-restarts 0
+             :max-finalization-lag-epochs 2}
+ :infra-rss-exit {:ns1 {:pid 4807 :vm-rss-kib 184564 :vm-hwm-kib 219844 :mem-available-kib 572208 :disk-available-kib 23532600 :delta-vs-baseline-kib -211940}
+                  :ns2 {:pid 3930 :vm-rss-kib 181552 :vm-hwm-kib 185172 :mem-available-kib 562540 :disk-available-kib 23801768}
+                  :ns3 {:pid 17315 :vm-rss-kib 185132 :vm-hwm-kib 188048 :mem-available-kib 564120 :disk-available-kib 23147556}
+                  :rss-gate-under-16-mib-delta? true}
+ :browser-soak-leg {:runner "Vector (Headless Chrome 156)"
+                    :artifact "af_heart.safetensors (522,320 B, 8 x 64 KiB, concurrency=3)"
+                    :fetches-ok 100
+                    :fetches-total 100
+                    :live-https-chunks 800
+                    :failures 0
+                    :un-injected-diagnose 0
+                    :total-sha256 "2c1c733b0e6576c810e268d3e440c21dea4e0f0131a3ba4cfc98d7fe6136d094"
+                    :js-heap-delta-mib 0.541
+                    :elapsed-ms 2726}
+ :bip-017b-gate-status :unlocked}
