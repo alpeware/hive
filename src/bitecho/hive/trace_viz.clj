@@ -17,7 +17,8 @@
             [einsum.core :as ein]
             [einsum.models.kokoro :as kokoro])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
-           [java.net InetSocketAddress]))
+           [java.io ByteArrayOutputStream]
+           [java.net InetSocketAddress URI]))
 
 ;; ---------------------------------------------------------------------------
 ;; Pure Core: Petname Voice Registry, Sanitization & Trace Parsing
@@ -247,6 +248,22 @@
      :peak peak
      :rms rms}))
 
+(def ^:private upstream-browser-bundle-url
+  "https://bitecho.org/app/bitecho-browser.js")
+
+(defn- fetch-browser-bundle-bytes!
+  "Fetches the live `bitecho-browser.js` bundle bytes from `bitecho.org` on each
+   request so same-origin `/chat` avoids CORS blocks while staying in lockstep
+   with upstream pointer flips and preserving exact SRI verification."
+  ^bytes []
+  (let [conn (.openConnection (.toURL (URI. upstream-browser-bundle-url)))]
+    (.setConnectTimeout conn 10000)
+    (.setReadTimeout conn 15000)
+    (with-open [is (.getInputStream conn)
+                baos (ByteArrayOutputStream.)]
+      (io/copy is baos)
+      (.toByteArray baos))))
+
 (defn- send-response!
   [^HttpExchange ex status content-type ^bytes body]
   (let [hdrs (.getResponseHeaders ex)]
@@ -262,6 +279,15 @@
   (let [path (.getPath (.getRequestURI ex))]
     (try
       (cond
+        (= path "/favicon.ico")
+        (do
+          (.sendResponseHeaders ex 204 -1)
+          (.close ex))
+
+        (= path "/api/bitecho-browser.js")
+        (send-response! ex 200 "application/javascript; charset=utf-8"
+                        (fetch-browser-bundle-bytes!))
+
         (or (= path "/") (= path "/index.html"))
         (let [res (io/resource "trace_viz/index.html")
               html (if res (slurp res) (slurp "resources/trace_viz/index.html"))]
