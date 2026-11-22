@@ -1,0 +1,188 @@
+{:schema :bitecho/bip-stage1-twin-report-v1,
+ :shaped-proposal nil,
+ :execution-mode :independent-blind-round1-five-subagents,
+ :merkle-trace-root
+ "8d6795563059e8eeeb161d99aa6093ec40dd37b2e33bb68568a13be6d12759de",
+ :diagnostics
+ {:count 1,
+  :by-reason {:stage1-round-limit-unresolved 1},
+  :events
+  [{:reason :stage1-round-limit-unresolved,
+    :round 1,
+    :standing-objections 1,
+    :standing-amendments 4}]},
+ :all-frontier-roster
+ [{:seat :simon,
+   :model "claude-opus-5-5-high",
+   :twin-config-cid
+   "adbe2930e4f7f39c77364efab9fd47e30973f449036b86dcb5038a8dc0fd6808"}
+  {:seat :axiom,
+   :model "gemini-4-argon-high",
+   :twin-config-cid
+   "c56850b56f32f731b056c16c7eec036d06c4460b4b3423e497804f81f9d28a96"}
+  {:seat :nexus,
+   :model "claude-sonnet-5-5-high",
+   :twin-config-cid
+   "e0e2aedbbb529a333df4ee519446fc5b3407d01f8d35e9904bd83eddac3e2a5d"}
+  {:seat :vector,
+   :model "gemini-4-carbon-high",
+   :twin-config-cid
+   "4933ab918b72b6936f201c7182a80869af4180b6aca009be0001affa739304dd"}
+  {:seat :lumen,
+   :model "gemini-4-hydrogen-high",
+   :twin-config-cid
+   "1fc7bd904b0b937c9f2b36e90899f63bb79f6a2796dae2568177d6c7838cbcd9"}],
+ :subagent-conversation-ids
+ {:simon "9eba9a6b-0e55-4a92-b3bc-faead8b02960",
+  :axiom "ec958e9b-6d72-4d46-91fe-05acd6ffa997",
+  :nexus "01aaa43b-7ba8-4cde-9729-e08fe7abaf99",
+  :vector "82119000-e6a3-4e80-96ee-e83af0c5fcc8",
+  :lumen "4c5188d2-d6d8-46aa-a1d1-b31acf2032ab"},
+ :real-consent-required? true,
+ :advisory-only? true,
+ :verdict-summary {:amendment 4, :objection 1},
+ :round1-outputs
+ [{:seat :simon,
+   :twin-identity
+   {:twin-of :simon,
+    :role :human-anchor,
+    :prompt-cid
+    "ff26581a1ecaa9c54ca62cc889031d9bd61ca495905317e8bc2ca6c1a72e2216",
+    :harness :agy,
+    :model-selector "claude-opus-5-5-high",
+    :values-cid
+    "2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448",
+    :twin-config-cid
+    "adbe2930e4f7f39c77364efab9fd47e30973f449036b86dcb5038a8dc0fd6808"},
+   :verdict :amendment,
+   :critique
+   "Advisory-only twin review (simulated consent never counts as real consent), grounded in ratified docs/VALUES.md (CID 2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448) and individual agency to act and object. BIP-019's recovery intent is right, but as written it opens four serious loopholes: (1) Retroactive ratification & agency: section 3 formalizes 'incident response ships first, process ratifies after' for live consensus code (b52a95c) without a D39.6 bounded emergency-exception record, full 64-char :patch-cid and bundle CIDs reachable on /artifact/v1/blob/<cid>, or any rollback/remediation trigger if a member raises a paramount objection during the N=10,000-epoch window—turning consent over running state-repair code into a fait accompli and dropping extension-by-objection. (2) Duration soak: restricting staging-first soak to 'any follow-up code' exempts b52a95c itself and relies on a 4-minute/41-epoch P-MEM-2 burst while leaving 'declare a soak duration' unquantified and silent on fork, term-divergence, and >256-epoch pruning fault injection. (3) Generator realism: deferring the generator case to Stage 6 reverses strict TDD ('no fix without its repro/generator first') and invites a static corrupted-depth fixture instead of a Malli/test.check stateful command-sequence generator over record-block-depth (direct and ancestor-loop branches), pruning, and repair-corrupt-block-depths convergence. (4) Honest error-budget & rollback-first accounting: a ~20-minute SEV-1 consensus deadlock consumes ~38x a six-nines annual finality budget; Postmortem #2 must pair the 3-way SLO split and rollback-first decision forensics (why LKG rollback was bypassed or could not clear the latent deadlock) with explicit error-budget freeze discipline.",
+   :amendments
+   ["Replace 'ship first, ratify after' in Sections 3 and 4.1 with an explicit bounded emergency-exception record documenting why LKG rollback could not clear the latent deadlock; publish verifiable 64-char SHA-256 :patch-cid, :patch-size-bytes, and full bundle/commit CIDs before Stage 2 opens; explicitly bind the N=10,000-epoch ack window (clock starting only on directed-session delivery proof) to extension-by-objection; and define the mandatory remediation or rollback protocol if any circle member raises a :paramount-objection against b52a95c."
+    "Remove the 'follow-up code only' soak exemption for b52a95c and set a concrete consensus finality soak floor: >= 300 epochs (>= 30 minutes, exceeding default-streamlet-retention-epochs = 256) on bitecho-gentoo-lab staging with injected forks, leader term divergence, retention pruning, and node restarts, asserting 0 finality stalls, 0 skew, epoch-finality-gap <= 3, and zero cached-depth > tip-depth inversions before Stage 2 closes."
+    "Require the streamlet generator case before Stage 2 closure (not deferred to Stage 6) as a seeded Malli/clojure.test.check command-sequence property—not a static snapshot fixture—generating fork histories, advancing :last-executed-finalized-epoch watermarks, retention pruning, both direct and ancestor-loop branches of record-block-depth, and deterministic convergence of repair-corrupt-block-depths across asymmetric node views, recording the exact test var and 64-char commit/patch ref in :generator-case-added?."
+    "Require Postmortem #2 (:bitecho/incident-postmortem-v1) to record dual UTC/CST timestamps, full 64-char sla/latest.edn and per-relay telemetry digest CIDs, the falsified term-reset hypothesis, rollback-first decision forensics for the 13:43-14:03 CST window, and the side-by-side 3-way SLO error-budget ledger freezing non-reliability feature rollouts until finality duration soak and stateful generator gates pass."],
+   :falsifier
+   {:failure-mode
+    "An unsoaked corner case in b52a95c's record-block-depth ancestor-loop branch or repair-corrupt-block-depths state-repair logic (or a future emergency consensus hotfix shipped under BIP-019's 'ship-first, ratify-after' precedent) diverges across validators and deadlocks finalization while missing objection-remediation rules leave unconsented code pinned live in production.",
+    :prod-trigger
+    "Validators retain asymmetric :blocks / :executed-finalized-blocks sets across a >256-epoch default-streamlet-retention-epochs pruning boundary after staggered restarts, catchup, or multi-fork term divergence—a transition sequence never exercised by BIP-019's 4-minute/41-epoch P-MEM-2 Run 2 burst or a deferred Stage 6 static fixture.",
+    :observable-signal
+    "Relay /statusz and /telemetry/<node>/digest.edn emit :finalization-stall :ongoing? true with flat :finalized-epoch while :head-epoch climbs (epoch-finality-gap > 3 across >=3 validators) alongside term divergence across ns1/ns2/ns3, or Stage 2 closes without a 64-char :patch-cid and verified :generator-case-added? var."}}
+  {:seat :axiom,
+   :twin-identity
+   {:twin-of :axiom,
+    :role :architect-auditor,
+    :prompt-cid
+    "eeebba49a2e6c69bd878f350b9917542a6310e233365802ae462866abebc3ef4",
+    :harness :agy,
+    :model-selector "gemini-4-argon-high",
+    :values-cid
+    "2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448",
+    :twin-config-cid
+    "c56850b56f32f731b056c16c7eec036d06c4460b4b3423e497804f81f9d28a96"},
+   :verdict :amendment,
+   :critique
+   "Advisory-only self-critique of my own Stage 0(a) draft (CID 423b1d9c82a8e4bc6fc00829e3eaef3cac55e65b83e4883e3df29c05a629ad63): (1) Governance & retroactive ratification discipline: BIP-019 prematurely invokes Draft 2 (86d593a5..., not yet promoted into docs/GOVERNANCE.md) as binding and pairs 'ship first, ratify after' (§3) with an uncalibrated N=10,000-epoch (~16-28h) silence-as-consent window (§0) for live consensus code b52a95c. That erodes each member's individual agency to inspect the exact diff and object, violates GOVERNANCE.md §2-3 (which mandates explicit 5/5 Stage 2 consent on :patch-cid/:patch-size-bytes and rejects :pending records via validate-bip-receipt), omits why Rollback-First SOP could not clear corrupted depths, and defines zero unwind path if a seat files PARAMOUNT-OBJECTION. (2) Evidence CIDs & quoting/scope discipline: BIP-019 cites only one 64-char CID (P-MEM-2 Run 2 receipt 7b1a91a4...), leaving bec0a72 and b52a95c as 7-char refs without full SHAs, bundle CIDs (12bd6378..., 32614488...), Run 1 failure receipt CID (5864bd20...), :patch-cid/:patch-size-bytes, node1..3/ns1..3 telemetry digests, sla/latest.edn, or client logs, while repeating unverified test hearsay ('54 tests / 296 assertions', omitting clojure -M:format). It also conflates 3 edge relays with the 6-node (4-of-6) quorum ('3-vs-3 across ns1/ns3', omitting node1..node3), omits client :chain-stalled vs :relay-degraded verification, and misses that streamlet/core.cljc runs (contains? executed-roots ...) before (contains? depths ...) in BOTH the direct p-hash check and the multi-hop loop ancestor walk. (3) Error-budget honesty & soak scope: '≈ 20 minutes' rounds away a catastrophic consensus breach. Under compute-six-nines-sla, a 1,200,000 ms halt burns 13,888.9x the 24h six-nines budget (86.4 ms -> 0.986111 availability, -1,199,913.6 ms remaining, :six-nines-met? false), 463.0x the 30d budget (2,592 ms), 38.05x the 1y budget (31,536 ms), and breaches the 0 deploy-attributable downtime budget (bec0a72), while record-stall-sample (head - finalized > 10) masks the first ~10 stall epochs. Moreover, citing 242s/41-epoch P-MEM-2 Run 2 as post-fix verification contradicts §4.3's duration-soak rule and never crosses default-streamlet-retention-epochs (256).",
+   :amendments
+   ["Reclassify live b52a95c strictly as :provisional-incident-mitigation (documenting why Rollback-First SOP could not repair persisted/in-memory corrupted depths without repair-corrupt-block-depths), mark any Draft-2 workflow step as a provisional bridge under GOVERNANCE.md §2 rather than settled law, bar silence-as-consent for retroactive consensus ratification by requiring explicit 5/5 affirmative Stage 2 consent (zero :pending records per validate-bip-receipt) after recorded directed-session delivery acks, and specify an explicit rollback/superseding-hotfix protocol if any member raises PARAMOUNT-OBJECTION."
+    "Replace all truncated hashes and hearsay claims with full 40-char git SHAs and HTTP-200/SHA-256-verified 64-char CIDs: Run 1 failure receipt 5864bd209bdd720dc4bddb12db3f8ab87fe94137fd8183b4e99f7b89b79add9e (bundle 12bd63780365e53fb73819e447af84d40f9e399c2541c57ffaa2b331d5d53451), Run 2 receipt 7b1a91a4f2160671c46c77a45846cd888b623a7815dffff2ec2976b42b211355 (bundle 326144883c635255220e77654562ddfabec121135682a7b8f07ea3c20167b09f), self-contained :code-artifact/:patch-cid and positive :patch-size-bytes for b52a95c, all 6 validator/relay digests (node1..3, ns1..3), sla/latest.edn, client stall logs, and reproducible clojure -M:format + clojure -M:lint (0/0) + full test receipts."
+    "Replace '≈ 20 minutes' with exact onset-to-resumption UTC/CST timestamps measured from last finalized-epoch advance (explicitly adding back the pre-threshold head - finalized <= 10 detection lag omitted by record-stall-sample), report all 3 SLOs side-by-side (Consensus/Finality BREACHED, Edge :443 HTTP 1500/1500 in Run 1, Client/Sync BREACHED), and state exact unrounded error-budget math across 24h (86.4 ms budget, -1,199,913.6 ms remaining at 1,200,000 ms), 30d (2,592 ms), 1y (31,536 ms), and 0-budget deploy-attributable regression."
+    "Audit all 6 consensus nodes (4-of-6 quorum) and verify mechanical :chain-stalled vs :relay-degraded classification on light-node/browser clients during the stall; require the streamlet/core.cljc fix and test.check properties to cover BOTH the direct p-hash branch AND the multi-hop loop ancestor walk in record-block-depth (keying executed-root depth off the executed block's own epoch rather than :last-executed-finalized-epoch) plus repair-corrupt-block-depths convergence; land :bitecho/incident-postmortem-v1 defspec in code requiring both :generator-case-added? and :generator-case-var plus exact falsifying evidence for Vector's falsified term-reset hypothesis."
+    "Remove P-MEM-2 Run 2 (242s / 41 epochs) as consensus verification and declare a concrete numeric staging-first finality soak gate (>= 288 consecutive epochs / >= 30 min crossing default-streamlet-retention-epochs = 256 with prune-streamlet-state and delayed-fork injection) before Stage 2 closure."],
+   :falsifier
+   {:failure-mode
+    "Retroactive N=10,000 silence-as-consent ratifies an un-diffed consensus hotfix (b52a95c without :patch-cid or multi-prune finality soak) as consented consensus code, leaving multi-hop record-block-depth / prune-streamlet-state ancestor-walk depth skew or unreviewed emergency consensus regressions live in prod while governance and SLA gates fail closed or undercount outage.",
+    :prod-trigger
+    "Cluster advances past default-streamlet-retention-epochs (256 epochs, beyond P-MEM-2 Run 2's 41-epoch / 242s burst) and ingests a delayed fork block whose multi-hop ancestor walk hits :executed-finalized-blocks after :last-executed-finalized-epoch advances, OR an unverified emergency consensus fix ships under BIP-019's ship-first/silence-ratifies precedent and a member objects after N=10,000 epochs with no unwind protocol.",
+    :observable-signal
+    "telemetry/<node>/digest.edn emits {:cause :finalization-stall :ongoing? true} with epoch-finality-gap > 10 and diverging node :term values, sla/latest.edn reports negative :error-budget-remaining-ms (<< -86.4 ms/24h while omitting the first <= 10 stalled epochs before record-stall-sample triggers), and bitecho.governance.integrity/validate-bip-receipt rejects the BIP-019 receipt with :missing-patch-cid, :invalid-cid, or :pending-consent."}}
+  {:seat :nexus,
+   :twin-identity
+   {:twin-of :nexus,
+    :role :builder-lead,
+    :prompt-cid
+    "c8d08532ae87fce4fd6078d93209da1ce8fdd3a2191ad72467bd12c35f8f84f2",
+    :harness :agy,
+    :model-selector "claude-sonnet-5-5-high",
+    :values-cid
+    "2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448",
+    :twin-config-cid
+    "e0e2aedbbb529a333df4ee519446fc5b3407d01f8d35e9904bd83eddac3e2a5d"},
+   :verdict :amendment,
+   :critique
+   "Grounded in VALUES.md (CID 2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448): emergency b52a95c rightly restored 6/6 quorum with zero manual snapshot edits (bounded-risk recovery), yet ratifying BIP-019 as written erodes individual agency to verify and object. (1) Streamlet depth invariants: reordering (contains? depths p-hash) ahead of (contains? executed-roots p-hash) in streamlet/core.cljc record-block-depth (required in both the 1-hop fast path and ancestor-walk loop) leaves epoch-as-depth poisoning intact—record-block-depth, ingest-verified-ancestors, and checkpoint restore still seed :block-depths from :last-executed-finalized-epoch or (:epoch block). Whenever skipped epochs leave topological tip-depth < tip-epoch (e.g. 85684 vs 85690), an uncached or pruned executed parent still gives a fork block depth > real tip depth. (2) Self-healer safety: BIP-019 omits counted :diagnose telemetry (Rule 5), whether repair-corrupt-block-depths guards runtime transitions vs boot-only rebind-restored-state, and whether it enforces true topological depth rather than depth <= epoch; plus ratifying b52a95c without :patch-cid, 3-runtime :bundle-sha256 hashes, or defspec refs violates Verify, don't trust. (3) Generator realism: deferring a static corrupted-depth fork shape to Stage 6 violates Rule 1 TDD and skips the causal lifecycle (skipped epochs + pruning + execution + fork arrival + restore). (4) Duration soak mechanics: citing the 4-min / +41-epoch P-MEM-2 Run 2 burst (7b1a91a4...) contradicts section 4.3 while section 4.3 specifies no duration, epoch floor past streamlet-retention-epochs (256), or fault-injection rubric.",
+   :amendments
+   ["Fix all epoch-as-depth fallbacks in pure .cljc core: reorder record-block-depth in both fast path and walk loop, retain immutable topological :executed-root-depths across prune-streamlet-state, rebind-restored-state, and checkpoints instead of :last-executed-finalized-epoch or (:epoch block), and run repair-corrupt-block-depths at both restore and runtime admission checking topological child=parent+1 and canonical-anchor bounds with counted :diagnose {:reason :corrupt-block-depth-repaired} surfaced in /statusz and digest.edn."
+    "Enforce Rule 1 TDD and Values Verify-don't-trust prior to Stage 2 consent: attach b52a95c's self-contained :patch-cid and 3-runtime :bundle-sha256 fingerprints, and land a clojure.test.check command-sequence lifecycle generator (interleaving skipped epochs, branching forks, finalize-prefix, execute-finalized-blocks, prune-streamlet-state, ingest-verified-ancestors, and rebind-restored-state) instead of deferring a static corrupted-depth shape to Stage 6."
+    "Parameterize the consensus duration soak on staging (bitecho-gentoo-lab) to >= 60 min AND >= 300 epochs (crossing frozen-log-retention-epochs=168 and streamlet-retention-epochs=256) with injected skipped-epoch leader drop, mid-run node restart/restore, and delayed fork extending an older executed parent, asserting 0 :finalization-stall intervals, steady-state epoch-finality-gap <= 3, and 0 skew; also make N=10,000 epochs wall-clock equivalence (~27.8h at 10s devnet tick) explicit."],
+   :falsifier
+   {:failure-mode
+    "Silent Streamlet 3-vs-3 or split-quorum finalization deadlock recurs without counted self-heal diagnostics because uncached or pruned executed roots and ingested ancestors still convert epoch numbers into topological block depths whenever skipped epochs exist.",
+    :prod-trigger
+    "Cluster runs past streamlet-retention-epochs (256) with >= 1 skipped epoch in chain history (real-tip-depth < current-epoch); an older block in :executed-finalized-blocks (or restored checkpoint / ingested ancestor) lacks a :block-depths entry when a late fork block with epoch <= current-epoch (but > real-tip-depth) arrives at runtime without a node restart.",
+    :observable-signal
+    "digest.edn and /statusz report finalized-epoch flat while head-epoch climbs (epoch-finality-gap > 10), observability/record-stall-sample opens {:cause :finalization-stall :ongoing? true} across >= 3 nodes (sla/latest.edn quorum breach) with :term divergence, while (:diagnostics :corrupt-block-depth-repaired) remains absent or 0."}}
+  {:seat :vector,
+   :twin-identity
+   {:twin-of :vector,
+    :role :soak-runtime-edge,
+    :prompt-cid
+    "518e17edfd4ded6f8ee6cc6fa18375749f4bd3af84331fc73fc817a9add4d237",
+    :harness :agy,
+    :model-selector "gemini-4-carbon-high",
+    :values-cid
+    "2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448",
+    :twin-config-cid
+    "4933ab918b72b6936f201c7182a80869af4180b6aca009be0001affa739304dd"},
+   :verdict :amendment,
+   :critique
+   "BIP-019's recovery intent aligns with our safety aims, but under individual agency and Values CID 2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448 I withhold clean consent until three soak, VOPR, and gating loopholes are closed. First, citing P-MEM-2 Run 2 (a 4-min, 41-epoch :443 memory hammer, 85906->85947) as post-fix proof conflates emergency containment with an honest empirical soak gate, and Section 4.3 leaves 'duration soak for finality' completely unquantified: a 4-min run never even crosses one full default-streamlet-retention-epochs window (256 epochs, ~26 min). Second, deferring a static 'finalized parent cached depth > tip depth' fixture to Stage 6 is too weak for VOPR: in streamlet/core.cljc, BOTH the fast-path (contains? executed-roots p-hash) check and the ancestor-walk loop checked executed-roots before depths, and ingest-verified-ancestors also anchors unrooted blocks by :epoch rather than tip depth; we need deterministic dynamic fault injection plus a non-vacuity MUT-* mutant and a counted :diagnose effect whenever repair-corrupt-block-depths mutates state (Rule 5). Third, 'staging-first soak default applies to any follow-up code' lacks concrete staging exit criteria, pins only 7-char hashes (b52a95c/bec0a72) instead of 40/64-char CIDs, and omits exact 3-way SLO error-budget numbers (~1,200,000 ms finality stall vs 86.4 ms daily six-nines budget, i.e., ~13,889x burn).",
+   :amendments
+   ["Define measurable Consensus Finality Duration Soak pass/fail thresholds and execute it separately on b52a95c before Stage 2 close: >= 30 consecutive minutes AND >= 288 consecutive finalized epochs (> 1x default-streamlet-retention-epochs=256 so prune-streamlet-state, depth caching, and watermark advancement all exercise live), 0 flat finalized-epoch windows > 3 consecutive epochs (or > 30s), settled head-to-finalized epoch-finality-gap <= 3, 0 finalized-epoch skew across all 6 nodes, 0 unexplained restarts/OOMs, and 0 unrecovered client/browser BitechoLightNode stall regressions; never substitute P-MEM-2 for a finality soak."
+    "Upgrade the Stage 6 generator obligation into a mandatory VOPR + test.check + Rule 5 gate before Stage 2 consent: (a) add a stateful VOPR/test.check nemesis sequence that dynamically induces skipped epochs (chain depth < epoch), watermark advancement, > 256-epoch pruning, and older-parent fork blocks across both record-block-depth paths and ingest-verified-ancestors, paired with a bounded-finality-liveness oracle and a MUT-* non-vacuity mutant proving pre-fix code deadlocks while patched code heals; (b) emit a counted :diagnose effect (:corrupt-block-depth-repaired with block-hash, recorded-depth, computed-depth, and tip-depth) whenever repair-corrupt-block-depths runs so self-healing never masks recurring state corruption."
+    "Enforce concrete staging-first promotion gates and full receipt integrity: (a) any consensus/storage/memory follow-up code must pass the VOPR/MUT-* gate and a multi-node staging finality duration soak (>= 288 epochs with fault-injected restarts/forks) producing a signed staging soak receipt CID prior to 1-node-at-a-time prod canary rollout (rollback-first on >= 3 consecutive stalled epochs); (b) pin full 40-char commit SHAs and 64-char patch/bundle CIDs for b52a95c/bec0a72 and record exact UTC/CST breach intervals and honest 3-way SLO accounting in Postmortem #2 without rounding away the ~13,889x daily six-nines budget burn."],
+   :falsifier
+   {:failure-mode
+    "An unmeasured 'duration soak' plus static-only Stage 6 fixture allows a follow-up Streamlet pruning/depth-anchoring regression (or silent self-healing loop masking recurring depth corruption) to pass a short 4-to-10-minute smoke gate and deadlock cluster finalization in production once retention pruning and skipped-epoch forks interact.",
+    :prod-trigger
+    "Cluster advances past default-streamlet-retention-epochs (256 epochs, ~26 min) with skipped/empty epochs creating chain_depth < epoch while :last-executed-finalized-epoch advances and prune-streamlet-state trims older ancestors; a fork block referencing an older executed parent or an unrooted quorum ancestor via ingest-verified-ancestors arrives after the short soak window, inverting cached :block-depths above canonical tip depth or repeatedly firing uncounted repair-corrupt-block-depths.",
+    :observable-signal
+    "/telemetry/<node>/digest.edn and /sla/latest.edn report :finalization-stall {:ongoing? true} as head-epoch - finalized-epoch > 10 across quorum relays with frozen finalized-epoch, widening epoch-finality-gap, leader/follower term divergence (e.g. ns1 term 1 vs ns2 term 4 vs ns3 term 2), light-node/browser BitechoLightNode :chain-stalled / validator-state-disagreement errors, and silent or climbing :corrupt-block-depth-repaired :diagnose counters."}}
+  {:seat :lumen,
+   :twin-identity
+   {:twin-of :lumen,
+    :role :governance-architect,
+    :prompt-cid
+    "a954c14bd786e668b86ed83637d796a25c52e1fd67de29b748f45f7e3af15d0d",
+    :harness :agy,
+    :model-selector "gemini-4-hydrogen-high",
+    :values-cid
+    "2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448",
+    :twin-config-cid
+    "1fc7bd904b0b937c9f2b36e90899f63bb79f6a2796dae2568177d6c7838cbcd9"},
+   :verdict :objection,
+   :critique
+   "Grounded in VALUES.md (CID 2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448: Verify, do not trust; Zero silent failures; Artifacts by CID; Parity by construction) and individual agency to verify and object: (1) Cited-CID reachability fails: BIP-019 (CID 423b1d9c82a8e4bc6fc00829e3eaef3cac55e65b83e4883e3df29c05a629ad63) cites only short git hashes b52a95c and bec0a72 with zero 64-char :code-artifact, .patch, or bundle CIDs, violating GOVERNANCE.md §3.1. Live probes across ns1/ns2/ns3 return HTTP 404 (blob-not-found) for the deployed b52a95c full-node bundle (326144883c635255220e77654562ddfabec121135682a7b8f07ea3c20167b09f, from receipt 7b1a91a4f2160671c46c77a45846cd888b623a7815dffff2ec2976b42b211355) and bec0a72 bundle (12bd63780365e53fb73819e447af84d40f9e399c2541c57ffaa2b331d5d53451); ns1/ns2/ns3 /statusz log pointer-subnet-mismatch for dist/bips/bip-019-fepoch1-proposal.md on bitecho.org/dev, no bip-019 pointer is published, and dist/bitecho-{full,light}-node.cjs pointers remain unconverged (emitting auto-update-diagnose light-update-non-monotonic-version every 60s in local events.jsonl). (2) Light-node and browser recovery after a 20-min stall is broken and unverified: during 13:43:57-14:03:35 CST, verify-chain-state-quorum and run-auto-sync-tick! accepted 2f+1 consensus on frozen epoch 85690, emitting auto-sync ok:true synced:true on every 15s tick with auto_sync_last_error:null in ctl status; in browser_main.cljs, rolling restarts close validator WebRTC DataChannels and clear keepalives at :closed (meshConnected:false) with no automatic connect-mesh redial, no periodic /relay/v1/chain-state fallback polling, and zero backfill for missed live gossip broadcasts. (3) Operator visibility and governance timing are flawed: observability.core/record-startup-event resets :active-stall-started-ms nil on deploy restarts, erasing 19+ min of the stall so sla/latest.edn records only 45,766 ms instead of ~1,200,000 ms, and BIP-019 does not exclude stalled finalized_epoch time from N=10,000 or gate Stage 2 on client recovery and delivery proof.",
+   :amendments
+   ["Pre-Stage-2 CID & Smoke Gate: Publish HTTP 200 + SHA-256 verifiable 64-char CIDs for b52a95c (.patch + reproducible bundles) and BIP-019 on canonical pointers (resolving pointer-subnet-mismatch and converging dist/* and web/app/* client pointers via monotonic :seq), and pass a pre-Stage-2 smoke gate asserting ctl status, send, and post-restart auto-redial with populated :petnames and :sessions plus HTTP 200/SHA-256 on every cited CID."
+    "Client Stall Visibility & Browser/Light-Node Recovery: Add head-vs-finalized lag and stall-duration checks with counted :diagnose to verify-chain-state-quorum, auto-sync, and ctl status/getStatus; add bounded browser WebRTC connect-mesh auto-redial, periodic HTTP /relay/v1/chain-state fallback polling, and post-stall/post-restart recovery assertions to the headless-browser and Node E2E gates."
+    "Honest SLA Persistence & Explicit Delivery Proof: Preserve :active-stall-started-ms across observability.core/record-startup-event restarts so sla/latest.edn and Postmortem #2 account for the full ~20-min stall, and define the N=10,000 epoch ack clock strictly over head-epoch/wall-clock after explicit directed-session delivery receipts so sleeping or restarting peers are never silently timed out."],
+   :falsifier
+   {:failure-mode
+    "Circle ratifies an unreachable HTTP 404 consensus hotfix while light nodes report healthy sync through a 20-min stall, browsers remain disconnected after rolling restarts, and SLA telemetry erases 96% of the stall window.",
+    :prod-trigger
+    "A consensus finality stall coincides with rolling hotfix restarts while 2f+1 validators agree on the same frozen finalized_epoch and b52a95c/client pointers remain unpublished or 404.",
+    :observable-signal
+    "HTTP 404 on /artifact/v1/blob/326144883c635255220e77654562ddfabec121135682a7b8f07ea3c20167b09f across ns1/ns2/ns3; pointer-subnet-mismatch in ns1/ns2/ns3 /statusz; sla/latest.edn finalization-stall duration-ms 45766 instead of ~1200000; events.jsonl auto-sync ok:true synced:true finalized_epoch:85690 alongside light-update-non-monotonic-version; and browser getStatus() stuck at meshConnected:false phase:closed degraded:true."}}],
+ :runner-commit "bd1adc595e78a160003b78bf7da18ed6a56f0f95",
+ :proposal-cid
+ "423b1d9c82a8e4bc6fc00829e3eaef3cac55e65b83e4883e3df29c05a629ad63",
+ :bip-id "BIP-019",
+ :episode/values-cid
+ "2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448",
+ :status :unresolved,
+ :executed-at "2026-11-22T20:25:00Z",
+ :trace-verified? true,
+ :simulated-consent-counts-as-real? false,
+ :completed-at "2026-11-22T20:32:00Z"}
