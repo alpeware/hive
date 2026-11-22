@@ -52,6 +52,54 @@
   .pill.ok { border-color: rgba(52, 211, 153, 0.5); color: var(--ok); }
   .pill.warn { border-color: rgba(245, 158, 11, 0.5); color: var(--warn); }
   .pill.live { border-color: rgba(251, 113, 133, 0.7); color: var(--danger); }
+  .relay-pill-wrap { position: relative; display: inline-flex; align-items: center; }
+  button.relay-pill {
+    font-size: 0.72rem;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--muted);
+    cursor: pointer;
+    font-weight: 600;
+  }
+  button.relay-pill.ok { border-color: rgba(52, 211, 153, 0.5); color: var(--ok); }
+  button.relay-pill.warn { border-color: rgba(245, 158, 11, 0.5); color: var(--warn); }
+  button.relay-pill.live { border-color: rgba(251, 113, 133, 0.7); color: var(--danger); }
+  .relay-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 50;
+    min-width: 310px;
+    max-width: 400px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 10px 12px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+    font-size: 0.75rem;
+    color: var(--text);
+    display: none;
+  }
+  .relay-popover.open { display: block; }
+  .relay-popover-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(38, 52, 82, 0.6);
+  }
+  .relay-popover-row:last-child { border-bottom: none; }
+  .relay-popover-meta {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.71rem;
+    line-height: 1.45;
+  }
   .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   select, button, input {
     background: var(--panel-2);
@@ -214,6 +262,10 @@
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
     <h1>Bitecho Hive — Live Chat</h1>
     <span id="api-badge" class="pill">BitechoLightNode: checking...</span>
+    <span class="relay-pill-wrap">
+      <button id="relay-health-pill" type="button" class="relay-pill" title="Relay pool health (click to inspect per-relay RTT, epoch, cooldown &amp; failovers)" aria-expanded="false">Relays: --/3</button>
+      <div id="relay-health-popover" class="relay-popover" role="dialog" aria-label="Relay Pool Diagnostics"></div>
+    </span>
     <span id="node-id-badge" class="pill" style="display:none;"></span>
     <a class="nav-link" href="/">← Trace Audio Visualizer</a>
   </div>

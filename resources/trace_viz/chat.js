@@ -2,6 +2,359 @@ const $ = (id) => document.getElementById(id);
 const PALETTE = ["#f59e0b", "#38bdf8", "#a78bfa", "#34d399", "#fb7185", "#f97316", "#22d3ee", "#e879f9"];
 const DEFAULT_VOICES = { simon: "am_michael", axiom: "bm_george", nexus: "am_adam", vector: "bm_lewis", lumen: "af_heart" };
 
+// BIP-018 Track 3: Multi-Relay Pool + Stale-Epoch Guard + Live Chunk Progress
+const DEFAULT_RELAY_URLS = [
+  "https://ns1.bitecho.org",
+  "https://ns2.bitecho.org",
+  "https://ns3.bitecho.org"
+];
+const STALE_EPOCH_LAG_THRESHOLD = 6;
+const RELAY_COOLDOWN_SCHEDULE_MS = [5000, 15000, 60000];
+
+function relayShortName(relay) {
+  const s = String(relay || "").trim();
+  if (!s) return "relay";
+  const host = s.replace(/^https?:\/\//i, "").replace(/\/.*$/, "").replace(/:\d+$/, "");
+  return host.includes(".") ? host.split(".")[0] : host;
+}
+
+function formatChunkProgress({ label, completed, total, relay, failovers }) {
+  const lbl = String(label || "").trim() || "Artifact";
+  const tot = Math.max(0, Math.floor(Number(total) || 0));
+  const done = Math.min(tot, Math.max(0, Math.floor(Number(completed) || 0)));
+  const rname = relayShortName(relay);
+  const fo = Math.max(0, Math.floor(Number(failovers) || 0));
+  const base = `${lbl} ${done}/${tot} via ${rname}`;
+  if (fo > 0) {
+    return `${base} · ${fo} ${fo === 1 ? "failover" : "failovers"}`;
+  }
+  return base;
+}
+
+function createRelayEntry(url) {
+  const cleanUrl = String(url).replace(/\/+$/, "");
+  return {
+    id: relayShortName(cleanUrl),
+    url: cleanUrl,
+    healthy: true,
+    inCooldown: false,
+    cooldownUntil: 0,
+    consecutiveFailures: 0,
+    ewmaRttMs: null,
+    finalizedEpoch: null,
+    stale: false,
+    lastError: null,
+    lastCheckedAt: 0
+  };
+}
+
+const relayPoolState = {
+  generation: 1,
+  source: "browser-relay-pool",
+  relays: DEFAULT_RELAY_URLS.map(createRelayEntry),
+  activeTransfer: null,
+  diagnostics: {
+    "relay-failover": 0,
+    "relay-stale-epoch": 0,
+    "relay-recovered": 0,
+    "ignored-stale-relay-callback": 0,
+    lastError: null
+  }
+};
+
+function findRelayEntry(urlOrId) {
+  const clean = String(urlOrId || "").replace(/\/+$/, "");
+  const shortId = relayShortName(clean);
+  return relayPoolState.relays.find((r) => r.url === clean || r.id === shortId) || null;
+}
+
+function recordRelaySuccess(urlOrId, rttMs, finalizedEpoch, gen) {
+  if (typeof gen === "number" && gen < relayPoolState.generation) {
+    relayPoolState.diagnostics["ignored-stale-relay-callback"] += 1;
+    return;
+  }
+  const entry = findRelayEntry(urlOrId);
+  if (!entry) return;
+  const wasDown = !entry.healthy || entry.inCooldown || entry.stale;
+  entry.lastCheckedAt = Date.now();
+  if (typeof rttMs === "number" && Number.isFinite(rttMs) && rttMs >= 0) {
+    entry.ewmaRttMs = entry.ewmaRttMs === null
+      ? Math.round(rttMs)
+      : Math.round(entry.ewmaRttMs * 0.7 + rttMs * 0.3);
+  }
+  if (typeof finalizedEpoch === "number" && Number.isFinite(finalizedEpoch)) {
+    entry.finalizedEpoch = finalizedEpoch;
+  }
+  // BIP-018 Edge Case #2: check stale-epoch lag > 6 behind healthy peers
+  const peerEpochs = relayPoolState.relays
+    .filter((r) => r.healthy && !r.inCooldown && typeof r.finalizedEpoch === "number")
+    .map((r) => r.finalizedEpoch);
+  const peerMax = peerEpochs.length ? Math.max(...peerEpochs) : null;
+  if (peerMax !== null && typeof entry.finalizedEpoch === "number" && (peerMax - entry.finalizedEpoch) > STALE_EPOCH_LAG_THRESHOLD) {
+    entry.stale = true;
+    entry.healthy = false;
+    entry.consecutiveFailures += 1;
+    const cd = RELAY_COOLDOWN_SCHEDULE_MS[Math.min(entry.consecutiveFailures - 1, RELAY_COOLDOWN_SCHEDULE_MS.length - 1)];
+    entry.inCooldown = true;
+    entry.cooldownUntil = Date.now() + cd;
+    entry.lastError = `stale-epoch (lag ${peerMax - entry.finalizedEpoch} > ${STALE_EPOCH_LAG_THRESHOLD})`;
+    relayPoolState.diagnostics["relay-stale-epoch"] += 1;
+    relayPoolState.diagnostics.lastError = entry.lastError;
+    return;
+  }
+  entry.stale = false;
+  entry.healthy = true;
+  entry.inCooldown = false;
+  entry.cooldownUntil = 0;
+  entry.consecutiveFailures = 0;
+  entry.lastError = null;
+  if (wasDown) {
+    relayPoolState.diagnostics["relay-recovered"] += 1;
+  }
+}
+
+function recordRelayFailure(urlOrId, errMsg, gen) {
+  if (typeof gen === "number" && gen < relayPoolState.generation) {
+    relayPoolState.diagnostics["ignored-stale-relay-callback"] += 1;
+    return;
+  }
+  const entry = findRelayEntry(urlOrId);
+  if (!entry) return;
+  entry.lastCheckedAt = Date.now();
+  entry.healthy = false;
+  entry.consecutiveFailures += 1;
+  const cd = RELAY_COOLDOWN_SCHEDULE_MS[Math.min(entry.consecutiveFailures - 1, RELAY_COOLDOWN_SCHEDULE_MS.length - 1)];
+  entry.inCooldown = true;
+  entry.cooldownUntil = Date.now() + cd;
+  entry.lastError = String(errMsg || "relay-error");
+  relayPoolState.diagnostics.lastError = `${entry.id}: ${entry.lastError}`;
+}
+
+function recordRelayFailover(fromUrl, toUrl, chunkIdx, reason) {
+  relayPoolState.diagnostics["relay-failover"] += 1;
+  relayPoolState.diagnostics.lastError = `failover ${relayShortName(fromUrl)}->${relayShortName(toUrl)} chunk=${chunkIdx} (${reason})`;
+}
+
+function orderedRelayCandidates(extraMirrors) {
+  const now = Date.now();
+  for (const r of relayPoolState.relays) {
+    if (r.inCooldown && r.cooldownUntil && now >= r.cooldownUntil) {
+      r.inCooldown = false;
+    }
+  }
+  const healthy = relayPoolState.relays
+    .filter((r) => r.healthy && !r.inCooldown && !r.stale)
+    .sort((a, b) => (a.ewmaRttMs ?? 150) - (b.ewmaRttMs ?? 150))
+    .map((r) => r.url);
+  const cooling = relayPoolState.relays
+    .filter((r) => !healthy.includes(r.url))
+    .sort((a, b) => (a.cooldownUntil || 0) - (b.cooldownUntil || 0))
+    .map((r) => r.url);
+  const merged = [...healthy, ...cooling];
+  if (Array.isArray(extraMirrors)) {
+    for (const m of extraMirrors) {
+      const clean = String(m || "").replace(/\/+$/, "");
+      if (clean && !merged.includes(clean)) merged.push(clean);
+    }
+  }
+  return merged;
+}
+
+function mergeExternalRelayPool(statusObj) {
+  const rp = statusObj && (statusObj.relay_pool || statusObj.relayPool || statusObj["relay-pool"]);
+  if (!rp) return false;
+  const list = Array.isArray(rp.relays) ? rp.relays : (Array.isArray(rp) ? rp : null);
+  if (!list || !list.length) return false;
+  relayPoolState.source = "BitechoLightNode.relay_pool";
+  if (typeof rp.generation === "number") {
+    relayPoolState.generation = Math.max(relayPoolState.generation, rp.generation);
+  }
+  for (const item of list) {
+    const url = String(item.url || item.relay || "").replace(/\/+$/, "");
+    let entry = findRelayEntry(url || item.id);
+    if (!entry && url) {
+      entry = createRelayEntry(url);
+      relayPoolState.relays.push(entry);
+    }
+    if (!entry) continue;
+    if (typeof item.healthy === "boolean") entry.healthy = item.healthy;
+    else if (typeof item["healthy?"] === "boolean") entry.healthy = item["healthy?"];
+    if (typeof item.inCooldown === "boolean") entry.inCooldown = item.inCooldown;
+    else if (typeof item.in_cooldown === "boolean") entry.inCooldown = item.in_cooldown;
+    else if (typeof item["in-cooldown?"] === "boolean") entry.inCooldown = item["in-cooldown?"];
+    const rtt = item.ewmaRttMs ?? item.ewma_rtt_ms ?? item.rttMs ?? item.rtt_ms;
+    if (typeof rtt === "number" && Number.isFinite(rtt)) entry.ewmaRttMs = Math.round(rtt);
+    const ep = item.finalizedEpoch ?? item.finalized_epoch ?? item["finalized-epoch"];
+    if (typeof ep === "number" && Number.isFinite(ep)) entry.finalizedEpoch = ep;
+    if (typeof item.stale === "boolean") entry.stale = item.stale;
+    else if (typeof item["stale?"] === "boolean") entry.stale = item["stale?"];
+    if (item.lastError || item.last_error) entry.lastError = String(item.lastError || item.last_error);
+  }
+  const diag = rp.diagnostics || rp.diagnose || {};
+  const fo = diag["relay-failover"] ?? diag.relayFailover ?? rp.failovers;
+  if (typeof fo === "number") {
+    relayPoolState.diagnostics["relay-failover"] = Math.max(relayPoolState.diagnostics["relay-failover"], fo);
+  }
+  const se = diag["relay-stale-epoch"] ?? diag.relayStaleEpoch;
+  if (typeof se === "number") {
+    relayPoolState.diagnostics["relay-stale-epoch"] = Math.max(relayPoolState.diagnostics["relay-stale-epoch"], se);
+  }
+  const rec = diag["relay-recovered"] ?? diag.relayRecovered;
+  if (typeof rec === "number") {
+    relayPoolState.diagnostics["relay-recovered"] = Math.max(relayPoolState.diagnostics["relay-recovered"], rec);
+  }
+  return true;
+}
+
+function classifyRelayHealth(relays) {
+  const list = Array.isArray(relays) ? relays : relayPoolState.relays;
+  const totalCount = list.length;
+  const now = Date.now();
+  const peerEpochs = list
+    .filter((r) => r.healthy && !(r.inCooldown && (!r.cooldownUntil || now < r.cooldownUntil)) && typeof r.finalizedEpoch === "number")
+    .map((r) => r.finalizedEpoch);
+  const peerMax = peerEpochs.length ? Math.max(...peerEpochs) : null;
+  let healthyCount = 0;
+  let staleCount = 0;
+  const evaluated = list.map((r) => {
+    const inCd = Boolean(r.inCooldown && (!r.cooldownUntil || now < r.cooldownUntil));
+    const isStale = Boolean(r.stale || (peerMax !== null && typeof r.finalizedEpoch === "number" && (peerMax - r.finalizedEpoch) > STALE_EPOCH_LAG_THRESHOLD));
+    if (isStale) staleCount += 1;
+    const effHealthy = Boolean(r.healthy && !inCd && !isStale);
+    if (effHealthy) healthyCount += 1;
+    return Object.assign({}, r, { inCooldown: inCd, stale: isStale, effectiveHealthy: effHealthy });
+  });
+  const status = (totalCount > 0 && healthyCount === totalCount)
+    ? "healthy"
+    : (healthyCount > 0 ? "degraded" : "down");
+  const pillClass = status === "healthy"
+    ? "relay-pill ok"
+    : (status === "degraded" ? "relay-pill warn" : "relay-pill live");
+  const blastRadius = status === "healthy"
+    ? "ok"
+    : (status === "degraded" ? "relay-degraded" : "chain-stalled");
+  return {
+    status,
+    pillClass,
+    label: `Relays: ${healthyCount}/${totalCount}`,
+    healthyCount,
+    totalCount,
+    staleCount,
+    peerMaxFinalizedEpoch: peerMax,
+    blastRadius,
+    relays: evaluated
+  };
+}
+
+function updateRelayHealthPill(statusObj) {
+  if (statusObj) {
+    mergeExternalRelayPool(statusObj);
+  } else {
+    const api = window.BitechoLightNode;
+    if (api && typeof api.status === "function") {
+      try { mergeExternalRelayPool(api.status()); } catch (_) {}
+    }
+  }
+  const summary = classifyRelayHealth(relayPoolState.relays);
+  const pill = $("relay-health-pill");
+  if (pill) {
+    pill.textContent = summary.label;
+    pill.className = summary.pillClass;
+    const lines = [
+      `Relay Pool (${summary.blastRadius}) · failovers: ${relayPoolState.diagnostics["relay-failover"]} · stale: ${relayPoolState.diagnostics["relay-stale-epoch"]}`,
+      ...summary.relays.map((r) => {
+        const st = r.effectiveHealthy ? "ok" : (r.stale ? "stale-epoch" : (r.inCooldown ? "cooldown" : "down"));
+        const rtt = r.ewmaRttMs !== null ? `${r.ewmaRttMs}ms` : "--";
+        const ep = r.finalizedEpoch !== null ? `ep=${r.finalizedEpoch}` : "ep=--";
+        return `• ${r.id}: ${st} (${rtt}, ${ep})`;
+      })
+    ];
+    if (relayPoolState.activeTransfer) {
+      lines.push(`Transfer: ${relayPoolState.activeTransfer}`);
+    }
+    pill.title = lines.join("\n");
+  }
+  const pop = $("relay-health-popover");
+  if (pop && pop.classList.contains("open")) {
+    const rowsHtml = summary.relays.map((r) => {
+      const badgeCls = r.effectiveHealthy ? "ok" : (r.stale || r.inCooldown ? "warn" : "live");
+      const badgeTxt = r.effectiveHealthy ? "healthy" : (r.stale ? "stale-epoch" : (r.inCooldown ? "cooldown" : "down"));
+      const rttTxt = r.ewmaRttMs !== null ? `${r.ewmaRttMs} ms` : "--";
+      const epTxt = r.finalizedEpoch !== null ? `ep ${r.finalizedEpoch}` : "ep --";
+      return `<div class="relay-popover-row">
+        <span><strong>${r.id}</strong> <span style="color:var(--muted);">${epTxt} · ${rttTxt}</span></span>
+        <span class="pill ${badgeCls}" style="font-size:0.66rem;padding:1px 6px;">${badgeTxt}</span>
+      </div>`;
+    }).join("");
+    const brCls = summary.blastRadius === "ok" ? "ok" : (summary.blastRadius === "relay-degraded" ? "warn" : "live");
+    const transferLine = relayPoolState.activeTransfer
+      ? `<div>Active BIP-017a: <strong>${relayPoolState.activeTransfer}</strong></div>`
+      : "";
+    const errLine = relayPoolState.diagnostics.lastError
+      ? `<div>Last error: <code>${relayPoolState.diagnostics.lastError}</code></div>`
+      : "";
+    pop.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <strong>Relay Pool Health</strong>
+        <span class="pill ${brCls}" style="font-size:0.66rem;padding:1px 6px;">:${summary.blastRadius}</span>
+      </div>
+      ${rowsHtml}
+      <div class="relay-popover-meta">
+        <div>Source: ${relayPoolState.source} · gen ${relayPoolState.generation}</div>
+        <div>Failovers: <strong>${relayPoolState.diagnostics["relay-failover"]}</strong> · Stale: <strong>${relayPoolState.diagnostics["relay-stale-epoch"]}</strong> · Recovered: <strong>${relayPoolState.diagnostics["relay-recovered"]}</strong></div>
+        ${transferLine}
+        ${errLine}
+      </div>
+    `;
+  }
+  return summary;
+}
+
+async function probeRelayPoolHealth() {
+  const gen = relayPoolState.generation;
+  const api = window.BitechoLightNode;
+  if (api && typeof api.status === "function") {
+    try {
+      const st = api.status();
+      if (st && mergeExternalRelayPool(st)) {
+        updateRelayHealthPill();
+        return;
+      }
+    } catch (_) {}
+  }
+  await Promise.all(relayPoolState.relays.map(async (r) => {
+    const t0 = performance.now();
+    try {
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), 4500) : null;
+      const res = await fetch(`${r.url}/statusz`, {
+        method: "GET",
+        cache: "no-store",
+        signal: ctrl ? ctrl.signal : undefined
+      });
+      if (timer) clearTimeout(timer);
+      const rtt = performance.now() - t0;
+      if (res.ok) {
+        let ep = null;
+        try {
+          const ct = res.headers.get("content-type") || "";
+          if (ct.includes("json")) {
+            const j = await res.json();
+            const rawEp = j.finalized_epoch ?? j.finalizedEpoch ?? j.epoch;
+            if (typeof rawEp === "number" && Number.isFinite(rawEp)) ep = rawEp;
+          }
+        } catch (_) {}
+        recordRelaySuccess(r.url, rtt, ep, gen);
+      } else {
+        recordRelayFailure(r.url, `http-${res.status}`, gen);
+      }
+    } catch (e) {
+      recordRelayFailure(r.url, (e && e.message) || "probe-failed", gen);
+    }
+  }));
+  updateRelayHealthPill();
+}
+
 // BIP-017b: Zero-CDN self-hosted inference paths & BIP-017a weight manifests
 const INFERENCE_CONFIG = Object.assign({
   kokoroModuleUrl: "/app/vendor/kokoro-js.mjs",
@@ -9,10 +362,9 @@ const INFERENCE_CONFIG = Object.assign({
   vadModuleUrl: "/app/vendor/vad-web.mjs",
   ortWasmPaths: "/app/ort/",
   artifactMirrors: [
-    "https://ns2.bitecho.org",
     "https://ns1.bitecho.org",
-    "https://ns3.bitecho.org",
-    "https://bitecho.org"
+    "https://ns2.bitecho.org",
+    "https://ns3.bitecho.org"
   ],
   weightManifests: {
     af_heart: {
@@ -75,44 +427,192 @@ async function writeOpfsFile(filename, bytes) {
 }
 
 async function fetchManifestJson(manifestBlobCid, mirrors) {
+  const candidates = orderedRelayCandidates(mirrors);
+  const gen = relayPoolState.generation;
   let lastErr = "manifest-fetch-failed";
-  for (const m of mirrors) {
+  for (let i = 0; i < candidates.length; i++) {
+    const m = candidates[i];
+    const t0 = performance.now();
     try {
       const url = `${String(m).replace(/\/+$/, "")}/artifact/v1/blob/${manifestBlobCid}`;
       const res = await fetch(url);
-      if (res.ok) return await res.json();
+      const rtt = performance.now() - t0;
+      if (res.ok) {
+        const json = await res.json();
+        recordRelaySuccess(m, rtt, null, gen);
+        updateRelayHealthPill();
+        return json;
+      }
       lastErr = `http-${res.status}`;
+      recordRelayFailure(m, lastErr, gen);
     } catch (e) {
       lastErr = (e && e.message) || String(e);
+      recordRelayFailure(m, lastErr, gen);
     }
+    if (i + 1 < candidates.length) {
+      recordRelayFailover(m, candidates[i + 1], -1, lastErr);
+    }
+    updateRelayHealthPill();
   }
   throw new Error(lastErr);
 }
 
+function extractManifestChunkCids(manifest) {
+  if (!manifest || !Array.isArray(manifest.chunks) || !manifest.chunks.length) {
+    return null;
+  }
+  const cids = manifest.chunks.map((c) => {
+    if (typeof c === "string") return c;
+    if (c && typeof c === "object") return c.cid || c.sha256 || c.hash || null;
+    return null;
+  });
+  return cids.every((c) => typeof c === "string" && c.length === 64) ? cids : null;
+}
+
+async function fetchChunkedWithFailover(manifest, entry, label, mirrors, opts = {}) {
+  const chunkCids = extractManifestChunkCids(manifest);
+  const concurrency = Math.max(1, Math.min(4, Number(opts.concurrency) || 3));
+  const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+  const gen = relayPoolState.generation;
+
+  if (!chunkCids) {
+    const api = window.BitechoLightNode;
+    if (!api || typeof api.getChunkedArtifact !== "function") {
+      throw new Error("BitechoLightNode.getChunkedArtifact v1.1.0 unavailable");
+    }
+    const candidates = orderedRelayCandidates(mirrors);
+    const res = await api.getChunkedArtifact(entry.manifestCid, {
+      manifest,
+      mirrors: candidates,
+      concurrency
+    });
+    if (!res || !res.ok || !res.bytes) {
+      throw new Error((res && res.error) || `chunked-fetch-failed:${label}`);
+    }
+    return res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
+  }
+
+  const total = chunkCids.length;
+  const results = new Array(total);
+  let completed = 0;
+  let transferFailovers = 0;
+  let nextIdx = 0;
+
+  const reportProgress = (activeRelay) => {
+    const text = formatChunkProgress({
+      label,
+      completed,
+      total,
+      relay: activeRelay,
+      failovers: transferFailovers
+    });
+    relayPoolState.activeTransfer = completed < total ? text : null;
+    if (onProgress) {
+      onProgress({ label, completed, total, relay: activeRelay, failovers: transferFailovers, text });
+    }
+    updateRelayHealthPill();
+  };
+
+  async function fetchOneChunk(idx) {
+    const cid = chunkCids[idx];
+    const candidates = orderedRelayCandidates(mirrors);
+    let lastErr = "chunk-fetch-failed";
+    for (let attempt = 0; attempt < candidates.length; attempt++) {
+      const relayUrl = candidates[attempt];
+      const t0 = performance.now();
+      try {
+        const res = await fetch(`${relayUrl}/artifact/v1/blob/${cid}`);
+        const rtt = performance.now() - t0;
+        if (res.ok) {
+          const u8 = new Uint8Array(await res.arrayBuffer());
+          const actual = await sha256Hex(u8);
+          if (actual === cid) {
+            recordRelaySuccess(relayUrl, rtt, null, gen);
+            results[idx] = u8;
+            completed += 1;
+            reportProgress(relayUrl);
+            return;
+          }
+          lastErr = `sha256-mismatch:${actual.slice(0, 12)}`;
+          recordRelayFailure(relayUrl, lastErr, gen);
+        } else {
+          lastErr = `http-${res.status}`;
+          recordRelayFailure(relayUrl, lastErr, gen);
+        }
+      } catch (e) {
+        lastErr = (e && e.message) || String(e);
+        recordRelayFailure(relayUrl, lastErr, gen);
+      }
+      if (attempt + 1 < candidates.length) {
+        transferFailovers += 1;
+        recordRelayFailover(relayUrl, candidates[attempt + 1], idx, lastErr);
+        reportProgress(candidates[attempt + 1]);
+      }
+    }
+    throw new Error(`Chunk ${idx + 1}/${total} (${cid.slice(0, 12)}) failed across all relays: ${lastErr}`);
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, total) }, async () => {
+    while (nextIdx < total) {
+      const idx = nextIdx;
+      nextIdx += 1;
+      await fetchOneChunk(idx);
+    }
+  });
+  await Promise.all(workers);
+
+  let totalLen = 0;
+  for (const part of results) totalLen += part.length;
+  const combined = new Uint8Array(totalLen);
+  let off = 0;
+  for (const part of results) {
+    combined.set(part, off);
+    off += part.length;
+  }
+  const expectedTotalSha = (manifest && (manifest.total_sha256 || manifest.totalSha256)) || entry.totalSha256;
+  if (expectedTotalSha) {
+    const actualTotalSha = await sha256Hex(combined);
+    if (actualTotalSha !== expectedTotalSha) {
+      throw new Error(`Reassembled SHA-256 mismatch for ${label}: ${actualTotalSha.slice(0, 12)} != ${expectedTotalSha.slice(0, 12)}`);
+    }
+  }
+  relayPoolState.activeTransfer = null;
+  updateRelayHealthPill();
+  return combined;
+}
+
 async function loadWeightViaOpfs(manifestCid, opts = {}) {
-  const api = window.BitechoLightNode;
-  if (!api || typeof api.getChunkedArtifact !== "function") {
-    throw new Error("BitechoLightNode.getChunkedArtifact v1.1.0 unavailable");
-  }
-  const mirrors = opts.mirrors || INFERENCE_CONFIG.artifactMirrors;
+  const mirrors = orderedRelayCandidates(opts.mirrors || INFERENCE_CONFIG.artifactMirrors);
   const concurrency = opts.concurrency || 3;
-  const fetchOpts = { mirrors, concurrency };
-  if (opts.manifest) {
-    fetchOpts.manifest = opts.manifest;
-  } else if (opts.manifestBlobCid) {
-    fetchOpts.manifest = await fetchManifestJson(opts.manifestBlobCid, mirrors);
+  const label = opts.label || opts.filename || manifestCid.slice(0, 10);
+  let manifest = opts.manifest || null;
+  if (!manifest && opts.manifestBlobCid) {
+    manifest = await fetchManifestJson(opts.manifestBlobCid, mirrors);
   }
-  const res = await api.getChunkedArtifact(manifestCid, fetchOpts);
-  if (!res || !res.ok || !res.bytes) {
-    throw new Error((res && res.error) || "chunked-artifact-fetch-failed");
+  let bytes;
+  if (manifest && extractManifestChunkCids(manifest)) {
+    bytes = await fetchChunkedWithFailover(manifest, { manifestCid, totalSha256: opts.totalSha256 }, label, mirrors, {
+      concurrency,
+      onProgress: opts.onProgress
+    });
+  } else {
+    const api = window.BitechoLightNode;
+    if (!api || typeof api.getChunkedArtifact !== "function") {
+      throw new Error("BitechoLightNode.getChunkedArtifact v1.1.0 unavailable");
+    }
+    const res = await api.getChunkedArtifact(manifestCid, { manifest, mirrors, concurrency });
+    if (!res || !res.ok || !res.bytes) {
+      throw new Error((res && res.error) || "chunked-artifact-fetch-failed");
+    }
+    bytes = res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
   }
   const filename = opts.filename || `${manifestCid}.bin`;
-  const { file, objectUrl } = await writeOpfsFile(filename, res.bytes);
+  const { file, objectUrl } = await writeOpfsFile(filename, bytes);
   return {
     ok: true,
-    manifestCid: res.manifestCid || manifestCid,
-    totalSha256: res.totalSha256,
-    totalBytes: res.totalBytes || file.size,
+    manifestCid,
+    totalSha256: opts.totalSha256 || (manifest && (manifest.total_sha256 || manifest.totalSha256)) || null,
+    totalBytes: bytes.length || file.size,
     opfsSize: file.size,
     objectUrl,
     revoke: () => URL.revokeObjectURL(objectUrl)
@@ -123,7 +623,17 @@ window.__HIVE_OPFS_LOADER__ = {
   config: INFERENCE_CONFIG,
   sha256Hex,
   writeOpfsFile,
-  loadWeightViaOpfs
+  loadWeightViaOpfs,
+  fetchChunkedWithFailover
+};
+
+window.__HIVE_RELAY_POOL__ = {
+  defaultRelays: DEFAULT_RELAY_URLS,
+  formatChunkProgress,
+  classifyRelayHealth,
+  getSnapshot: () => classifyRelayHealth(relayPoolState.relays),
+  getDiagnostics: () => Object.assign({}, relayPoolState.diagnostics),
+  probe: probeRelayPoolHealth
 };
 
 function colorForKey(key) {
@@ -304,12 +814,12 @@ const SELF_HOSTED_STT_ASSETS = {
 let ortWasmBinaryPromise = null;
 
 function sttArtifactMirrors() {
-  const raw = [];
+  const extra = [];
   if (window.location && /^https?:$/i.test(window.location.protocol)) {
-    raw.push(window.location.origin);
+    const orig = window.location.origin.replace(/\/+$/, "");
+    if (!DEFAULT_RELAY_URLS.includes(orig)) extra.push(orig);
   }
-  raw.push("https://ns1.bitecho.org", "https://ns2.bitecho.org", "https://ns3.bitecho.org");
-  return [...new Set(raw.map((m) => String(m).replace(/\/+$/, "")))];
+  return orderedRelayCandidates(extra);
 }
 
 function sttCacheKeyUrl(key) {
@@ -329,22 +839,38 @@ async function openSttCacheSafe() {
 }
 
 async function fetchSingleBlobVerified(cid, mirrors) {
+  const candidates = orderedRelayCandidates(mirrors);
+  const gen = relayPoolState.generation;
   let lastErr = "single-blob-fetch-failed";
-  for (const m of mirrors) {
+  for (let i = 0; i < candidates.length; i++) {
+    const m = candidates[i];
+    const t0 = performance.now();
     try {
       const url = `${m}/artifact/v1/blob/${cid}`;
       const res = await fetch(url);
+      const rtt = performance.now() - t0;
       if (res.ok) {
         const u8 = new Uint8Array(await res.arrayBuffer());
         const actual = await sha256Hex(u8);
-        if (actual === cid) return u8;
+        if (actual === cid) {
+          recordRelaySuccess(m, rtt, null, gen);
+          updateRelayHealthPill();
+          return u8;
+        }
         lastErr = `cid-mismatch:${actual.slice(0, 12)}`;
+        recordRelayFailure(m, lastErr, gen);
       } else {
         lastErr = `http-${res.status}`;
+        recordRelayFailure(m, lastErr, gen);
       }
     } catch (e) {
       lastErr = (e && e.message) || String(e);
+      recordRelayFailure(m, lastErr, gen);
     }
+    if (i + 1 < candidates.length) {
+      recordRelayFailover(m, candidates[i + 1], 0, lastErr);
+    }
+    updateRelayHealthPill();
   }
   const api = window.BitechoLightNode;
   if (api && typeof api.getArtifact === "function") {
@@ -355,6 +881,16 @@ async function fetchSingleBlobVerified(cid, mirrors) {
     }
   }
   throw new Error(`Failed to fetch verified blob ${cid.slice(0, 12)}: ${lastErr}`);
+}
+
+function friendlySttChunkLabel(modelId, relpath) {
+  if (modelId && modelId.toLowerCase().includes("moonshine")) {
+    if (relpath && relpath.includes("encoder")) return "Moonshine encoder";
+    if (relpath && relpath.includes("decoder")) return "Moonshine";
+    if (relpath && relpath.includes("tokenizer")) return "Moonshine tokenizer";
+    return "Moonshine";
+  }
+  return relpath || "Artifact";
 }
 
 async function fetchChunkedAssetBytes(entry, label, mirrors) {
@@ -368,24 +904,21 @@ async function fetchChunkedAssetBytes(entry, label, mirrors) {
       }
     } catch (_) {}
   }
-  const api = window.BitechoLightNode;
-  if (!api || typeof api.getChunkedArtifact !== "function") {
-    throw new Error("BitechoLightNode.getChunkedArtifact v1.1.0 unavailable");
-  }
   const mb = entry.totalBytes ? ` (${(entry.totalBytes / 1048576).toFixed(1)} MiB)` : "";
   if ($("stt-status")) {
     $("stt-status").textContent = `Fetching ${label}${mb} via BIP-017a...`;
+    $("stt-status").className = "pill warn";
   }
   const manifest = await fetchManifestJson(entry.manifestBlobCid, mirrors);
-  const res = await api.getChunkedArtifact(entry.manifestCid, {
-    manifest,
-    mirrors,
-    concurrency: 3
+  const bytes = await fetchChunkedWithFailover(manifest, entry, label, mirrors, {
+    concurrency: 3,
+    onProgress: (prog) => {
+      if ($("stt-status")) {
+        $("stt-status").textContent = prog.text;
+        $("stt-status").className = prog.failovers > 0 ? "pill warn" : "pill";
+      }
+    }
   });
-  if (!res || !res.ok || !res.bytes) {
-    throw new Error((res && res.error) || `chunked-fetch-failed:${label}`);
-  }
-  const bytes = res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
   if (cache) {
     try {
       await cache.put(cacheUrl, new Response(bytes, {
@@ -425,7 +958,7 @@ function lookupSelfHostedSttEntry(reqUrl) {
 async function resolveSelfHostedSttAsset(reqUrl) {
   const hit = lookupSelfHostedSttEntry(reqUrl);
   if (!hit) return undefined;
-  const { relpath, entry } = hit;
+  const { modelId, relpath, entry } = hit;
   const contentType = entry.contentType || "application/octet-stream";
   const cache = await openSttCacheSafe();
   const cacheId = entry.manifestCid ? `chunked:${entry.manifestCid}` : `blob:${entry.cid}`;
@@ -441,7 +974,7 @@ async function resolveSelfHostedSttAsset(reqUrl) {
   const mirrors = sttArtifactMirrors();
   let bytes;
   if (entry.manifestCid) {
-    bytes = await fetchChunkedAssetBytes(entry, relpath, mirrors);
+    bytes = await fetchChunkedAssetBytes(entry, friendlySttChunkLabel(modelId, relpath), mirrors);
   } else {
     if ($("stt-status")) {
       $("stt-status").textContent = `Fetching ${relpath}...`;
@@ -901,6 +1434,7 @@ async function refreshNodeBadge(stArg) {
     $("api-badge").textContent = `BitechoLightNode v${(api && api.apiVersion) || "1.1.0"} CONNECTED (${(api && api.version) || "0.23.19"})`;
     $("api-badge").className = "pill ok";
   }
+  updateRelayHealthPill(st);
 }
 
 async function connectNode() {
@@ -1366,10 +1900,37 @@ if (globalThis.BitechoBrowser) {
     });
   }
 }
+if ($("relay-health-pill") && $("relay-health-popover")) {
+  $("relay-health-pill").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const pop = $("relay-health-popover");
+    const isOpen = pop.classList.toggle("open");
+    $("relay-health-pill").setAttribute("aria-expanded", isOpen ? "true" : "false");
+    updateRelayHealthPill();
+    if (isOpen) {
+      probeRelayPoolHealth().catch(() => {});
+    }
+  });
+  document.addEventListener("click", (e) => {
+    const pop = $("relay-health-popover");
+    const pill = $("relay-health-pill");
+    if (pop && pop.classList.contains("open") && !pop.contains(e.target) && e.target !== pill) {
+      pop.classList.remove("open");
+      if (pill) pill.setAttribute("aria-expanded", "false");
+    }
+  });
+}
+
 renderLists(["bitecho.org/dev", "bitecho.org/team", "bitecho.org/infra"], [], []);
+updateRelayHealthPill();
+probeRelayPoolHealth().catch(() => {});
 setInterval(() => {
   if (node) {
     refreshSidebar();
     renderPendingOffers();
   }
+  updateRelayHealthPill();
 }, 5000);
+setInterval(() => {
+  probeRelayPoolHealth().catch(() => {});
+}, 15000);

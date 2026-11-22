@@ -108,6 +108,104 @@
                         "\" crossorigin=\"anonymous\"></script>"))
       (str/replace "href=\"/chat\"" "href=\"./index.html\"")))
 
+;; ---------------------------------------------------------------------------
+;; Pure Core (BIP-018 Track 3): Relay Health Pill & Live Chunk Progress
+;; ---------------------------------------------------------------------------
+
+(def default-stale-epoch-lag-threshold
+  "BIP-018 Edge Case #2: relays returning 200 OK while lagging strictly more than
+   6 finalized epochs behind healthy peers are demoted into cooldown."
+  6)
+
+(defn relay-short-name
+  "Pure helper extracting a compact relay label (e.g. `ns2` from `https://ns2.bitecho.org`)."
+  [relay]
+  (let [s (str/trim (str relay))]
+    (if (str/blank? s)
+      "relay"
+      (let [host (-> s
+                     (str/replace #"^https?://" "")
+                     (str/replace #"/.*$" "")
+                     (str/replace #":\d+$" ""))]
+        (if (str/includes? host ".")
+          (first (str/split host #"\."))
+          host)))))
+
+(defn classify-relay-health
+  "Pure BIP-018 Track 3 classifier for the Hive `/app/` Relay Health Pill and
+   mechanical `:relay-degraded` vs `:chain-stalled` blast-radius separation.
+
+   `relays` is a seq of relay maps `{:id :url :healthy? :in-cooldown? :rtt-ms :finalized-epoch}`.
+   Optional `opts`: `{:stale-epoch-lag 6 :cluster-advancing? nil}`."
+  ([relays] (classify-relay-health relays {}))
+  ([relays {:keys [stale-epoch-lag cluster-advancing?]
+            :or {stale-epoch-lag default-stale-epoch-lag-threshold}}]
+   (let [entries (vec relays)
+         total-count (count entries)
+         candidate-epochs (keep (fn [r]
+                                  (when (and (boolean (:healthy? r))
+                                             (not (boolean (:in-cooldown? r)))
+                                             (number? (:finalized-epoch r)))
+                                    (long (:finalized-epoch r))))
+                                entries)
+         peer-max-epoch (when (seq candidate-epochs)
+                          (apply max candidate-epochs))
+         evaluated (mapv (fn [r]
+                           (let [ep (when (number? (:finalized-epoch r))
+                                      (long (:finalized-epoch r)))
+                                 stale? (boolean
+                                         (and peer-max-epoch
+                                              ep
+                                              (> (- peer-max-epoch ep) stale-epoch-lag)))
+                                 eff-healthy? (boolean
+                                               (and (boolean (:healthy? r))
+                                                    (not (boolean (:in-cooldown? r)))
+                                                    (not stale?)))]
+                             (assoc r :stale? stale? :effective-healthy? eff-healthy?)))
+                         entries)
+         healthy-count (count (filter :effective-healthy? evaluated))
+         stale-count (count (filter :stale? evaluated))
+         status (cond
+                  (and (pos? total-count) (= healthy-count total-count)) :healthy
+                  (pos? healthy-count) :degraded
+                  :else :down)
+         pill-class (case status
+                      :healthy "pill ok"
+                      :degraded "pill warn"
+                      :down "pill live")
+         blast-radius (cond
+                        (false? cluster-advancing?) :chain-stalled
+                        (= status :healthy) :ok
+                        (= status :degraded) :relay-degraded
+                        :else :chain-stalled)]
+     {:status status
+      :pill-class pill-class
+      :label (str "Relays: " healthy-count "/" total-count)
+      :healthy-count healthy-count
+      :total-count total-count
+      :stale-count stale-count
+      :peer-max-finalized-epoch peer-max-epoch
+      :blast-radius blast-radius})))
+
+(defn format-chunk-progress
+  "Pure BIP-018 Track 3 formatter for live BIP-017a chunked artifact progress.
+   Examples:
+   - `{:label \"ORT WASM\" :completed 12 :total 42 :relay \"https://ns1.bitecho.org\" :failovers 0}`
+     => \"ORT WASM 12/42 via ns1\"
+   - `{:label \"Moonshine\" :completed 18 :total 42 :relay \"https://ns2.bitecho.org\" :failovers 1}`
+     => \"Moonshine 18/42 via ns2 · 1 failover\""
+  [{:keys [label completed total relay failovers]}]
+  (let [lbl (let [s (str/trim (str label))]
+              (if (str/blank? s) "Artifact" s))
+        tot (max 0 (long (or total 0)))
+        done (min tot (max 0 (long (or completed 0))))
+        rname (relay-short-name relay)
+        fo (max 0 (long (or failovers 0)))
+        base (str lbl " " done "/" tot " via " rname)]
+    (if (pos? fo)
+      (str base " · " fo (if (= fo 1) " failover" " failovers"))
+      base)))
+
 (defn default-petname-voices
   "Petname entries for the 5-member Bitecho builders-stewards circle, including
    each member's default Kokoro-82M `voice_id` for browser TTS playback."

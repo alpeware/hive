@@ -39,6 +39,63 @@
                   (and (false? (:ok? res))
                        (boolean (some #(= :inline-script (:kind %)) (:errors res)))))))
 
+(def ^:private gen-relay-entry
+  (gen/hash-map
+   :id (gen/elements ["ns1" "ns2" "ns3"])
+   :url (gen/elements ["https://ns1.bitecho.org" "https://ns2.bitecho.org" "https://ns3.bitecho.org"])
+   :healthy? gen/boolean
+   :in-cooldown? gen/boolean
+   :rtt-ms (gen/choose 5 2000)
+   :finalized-epoch (gen/choose 80900 80950)))
+
+(defspec ^{:doc "BIP-018 Track 3: Relay health pill classification and mechanical :relay-degraded vs :chain-stalled invariants."}
+  prop-relay-health-pill-classification 50
+  (prop/for-all [relays (gen/vector gen-relay-entry 1 5)
+                 cluster-advancing? (gen/elements [nil true false])]
+                (let [res (viz/classify-relay-health relays {:cluster-advancing? cluster-advancing?})
+                      h (:healthy-count res)
+                      t (:total-count res)]
+                  (and (= t (count relays))
+                       (<= 0 h t)
+                       (= (:label res) (str "Relays: " h "/" t))
+                       (cond
+                         (= h t) (and (= :healthy (:status res))
+                                      (= "pill ok" (:pill-class res)))
+                         (pos? h) (and (= :degraded (:status res))
+                                       (= "pill warn" (:pill-class res)))
+                         :else (and (= :down (:status res))
+                                    (= "pill live" (:pill-class res))))
+                       (cond
+                         (false? cluster-advancing?) (= :chain-stalled (:blast-radius res))
+                         (= h t) (= :ok (:blast-radius res))
+                         (pos? h) (= :relay-degraded (:blast-radius res))
+                         :else (= :chain-stalled (:blast-radius res)))))))
+
+(defspec ^{:doc "BIP-018 Track 3: Live BIP-017a chunk progress formatting invariants."}
+  prop-chunk-progress-format-invariants 50
+  (prop/for-all [label (gen/elements ["Moonshine" "ORT WASM" "Kokoro-82M" ""])
+                 total (gen/choose 1 120)
+                 completed (gen/choose -5 130)
+                 relay (gen/elements ["https://ns1.bitecho.org"
+                                      "https://ns2.bitecho.org"
+                                      "https://ns3.bitecho.org"
+                                      "ns2"])
+                 failovers (gen/choose 0 10)]
+                (let [s (viz/format-chunk-progress {:label label
+                                                    :completed completed
+                                                    :total total
+                                                    :relay relay
+                                                    :failovers failovers})
+                      clamped (min total (max 0 completed))
+                      expected-lbl (if (str/blank? label) "Artifact" label)]
+                  (and (string? s)
+                       (str/starts-with? s (str expected-lbl " " clamped "/" total " via "))
+                       (not (str/includes? s "https://"))
+                       (cond
+                         (zero? failovers) (not (str/includes? s "failover"))
+                         (= 1 failovers) (str/ends-with? s " · 1 failover")
+                         :else (str/ends-with? s (str " · " failovers " failovers")))))))
+
 (deftest unit-petname-voice-registry-and-trace-parsing
   (testing "All 5 circle members have distinct Kokoro voice IDs in the petname registry"
     (let [petnames (viz/default-petname-voices)
@@ -158,7 +215,63 @@
             (is (str/includes? index-html "clj-einsum (:uop-webgpu Kokoro-82M Full Speech)"))
             (is (str/includes? viz-html "clj-einsum (:uop-webgpu Kokoro-82M Full Speech)"))
             (is (= (viz/sha256-bytes runner-bs) (:cid runner-entry)))
-            (is (= (viz/sha384-sri runner-bs) (:sri runner-entry))))))
+            (is (= (viz/sha384-sri runner-bs) (:sri runner-entry)))))
+
+        (testing "BIP-018 Track 3: Relay Health Pill, multi-relay pool, and live chunk progress UX"
+          (is (str/includes? index-html "id=\"relay-health-pill\""))
+          (is (str/includes? chat-js "https://ns1.bitecho.org"))
+          (is (str/includes? chat-js "https://ns2.bitecho.org"))
+          (is (str/includes? chat-js "https://ns3.bitecho.org"))
+          (is (str/includes? chat-js "relay-health-pill"))
+          (is (str/includes? chat-js "relay_pool"))
+          (is (str/includes? chat-js "relay-failover"))
+          (is (str/includes? chat-js "relay-stale-epoch"))
+          (is (str/includes? chat-js "formatChunkProgress"))
+          (is (str/includes? chat-js "updateRelayHealthPill"))
+          (is (str/includes? chat-js "fetchChunkedWithFailover"))))
       (finally
         (doseq [f (reverse (file-seq tmp-dir))]
           (.delete f))))))
+
+(deftest unit-bip018-relay-health-and-chunk-progress-examples
+  (testing "Stale relay lagging > 6 finalized epochs is demoted to :relay-degraded"
+    (let [res (viz/classify-relay-health
+               [{:id "ns1" :url "https://ns1.bitecho.org" :healthy? true :in-cooldown? false :finalized-epoch 80900}
+                {:id "ns2" :url "https://ns2.bitecho.org" :healthy? true :in-cooldown? false :finalized-epoch 80941}
+                {:id "ns3" :url "https://ns3.bitecho.org" :healthy? true :in-cooldown? false :finalized-epoch 80941}])]
+      (is (= :degraded (:status res)))
+      (is (= "pill warn" (:pill-class res)))
+      (is (= "Relays: 2/3" (:label res)))
+      (is (= 1 (:stale-count res)))
+      (is (= 80941 (:peer-max-finalized-epoch res)))
+      (is (= :relay-degraded (:blast-radius res)))))
+
+  (testing "0/3 healthy relays classifies as :down and :chain-stalled"
+    (let [res (viz/classify-relay-health
+               [{:id "ns1" :healthy? false}
+                {:id "ns2" :healthy? false}
+                {:id "ns3" :healthy? false}])]
+      (is (= :down (:status res)))
+      (is (= "pill live" (:pill-class res)))
+      (is (= "Relays: 0/3" (:label res)))
+      (is (= :chain-stalled (:blast-radius res)))))
+
+  (testing "Chunk progress formatting matches BIP-018 examples"
+    (is (= "ORT WASM 12/42 via ns1"
+           (viz/format-chunk-progress {:label "ORT WASM"
+                                       :completed 12
+                                       :total 42
+                                       :relay "https://ns1.bitecho.org"
+                                       :failovers 0})))
+    (is (= "Moonshine 18/42 via ns2 · 1 failover"
+           (viz/format-chunk-progress {:label "Moonshine"
+                                       :completed 18
+                                       :total 42
+                                       :relay "https://ns2.bitecho.org"
+                                       :failovers 1})))
+    (is (= "Moonshine 42/42 via ns3 · 2 failovers"
+           (viz/format-chunk-progress {:label "Moonshine"
+                                       :completed 42
+                                       :total 42
+                                       :relay "https://ns3.bitecho.org"
+                                       :failovers 2})))))
