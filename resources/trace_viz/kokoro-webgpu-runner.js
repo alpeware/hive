@@ -576,7 +576,529 @@ export function encodeWavPcm16(pcm, sampleRate = 24000) {
   return new Uint8Array(buf);
 }
 
+// ---------------------------------------------------------------------------
+// Pure-JS Kokoro-82M IPA Phonemizer (1:1 port of einsum.models.kokoro-phonemizer)
+// ---------------------------------------------------------------------------
+
+export const KOKORO_MAX_CONTEXT_LENGTH = 512;
+
+export const KOKORO_VOCAB = {
+  ";": 1, ":": 2, ",": 3, ".": 4, "!": 5, "?": 6,
+  "—": 9, "…": 10, "\"": 11, "(": 12, ")": 13, "“": 14, "”": 15, " ": 16,
+  "\u0303": 17, "ʣ": 18, "ʥ": 19, "ʦ": 20, "ʨ": 21, "ᵝ": 22, "\uAB67": 23,
+  "A": 24, "I": 25, "O": 31, "Q": 33, "S": 35, "T": 36, "W": 39, "Y": 41, "ᵊ": 42,
+  "a": 43, "b": 44, "c": 45, "d": 46, "e": 47, "f": 48, "h": 50, "i": 51, "j": 52,
+  "k": 53, "l": 54, "m": 55, "n": 56, "o": 57, "p": 58, "q": 59, "r": 60, "s": 61,
+  "t": 62, "u": 63, "v": 64, "w": 65, "x": 66, "y": 67, "z": 68,
+  "ɑ": 69, "ɐ": 70, "ɒ": 71, "æ": 72, "β": 75, "ɔ": 76, "ɕ": 77, "ç": 78,
+  "ɖ": 80, "ð": 81, "ʤ": 82, "ə": 83, "ɚ": 85, "ɛ": 86, "ɜ": 87, "ɟ": 90,
+  "ɡ": 92, "ɥ": 99, "ɨ": 101, "ɪ": 102, "ʝ": 103, "ɯ": 110, "ɰ": 111,
+  "ŋ": 112, "ɳ": 113, "ɲ": 114, "ɴ": 115, "ø": 116, "ɸ": 118, "θ": 119,
+  "œ": 120, "ɹ": 123, "ɾ": 125, "ɻ": 126, "ʁ": 128, "ɽ": 129, "ʂ": 130,
+  "ʃ": 131, "ʈ": 132, "ʧ": 133, "ʊ": 135, "ʋ": 136, "ʌ": 138, "ɣ": 139,
+  "ɤ": 140, "χ": 142, "ʎ": 143, "ʒ": 147, "ʔ": 148,
+  "ˈ": 156, "ˌ": 157, "ː": 158, "ʰ": 162, "ʲ": 164,
+  "↓": 169, "→": 171, "↗": 172, "↘": 173, "ᵻ": 177
+};
+
+const KOKORO_LEXICON = {
+  // Bitecho / Hive / AI / Systems domain
+  "bitecho": "bˈItɛkO",
+  "hive": "hˈIv",
+  "echo": "ˈɛkO",
+  "kokoro": "kOkˈɔɹO",
+  "clojure": "klˈOʒɚ",
+  "einsum": "ˈInsʌm",
+  "tensor": "tˈɛnsɚ",
+  "tensors": "tˈɛnsɚz",
+  "neural": "njˈʊɹəl",
+  "model": "mˈɑdəl",
+  "models": "mˈɑdəlz",
+  "voice": "vˈYs",
+  "voices": "vˈYsɪz",
+  "speech": "spˈiʧ",
+  "audio": "ˈɔdiO",
+  "sound": "sˈWnd",
+  "node": "nˈOd",
+  "nodes": "nˈOdz",
+  "peer": "pˈɪɹ",
+  "peers": "pˈɪɹz",
+  "network": "nˈɛtwɜɹk",
+  "mesh": "mˈɛʃ",
+  "swarm": "swˈɔɹm",
+  "agent": "ˈAʤənt",
+  "agents": "ˈAʤənts",
+  "circle": "sˈɜɹkəl",
+  "circles": "sˈɜɹkəlz",
+  "manifest": "mˈænəfɛst",
+  "chunk": "ʧˈʌŋk",
+  "chunks": "ʧˈʌŋks",
+  "stream": "stɹˈim",
+  "streaming": "stɹˈimɪŋ",
+  "browser": "bɹˈWzɚ",
+  "webgpu": "wˈɛbʤipˈiju",
+  "kernel": "kˈɜɹnəl",
+  "kernels": "kˈɜɹnəlz",
+  "local": "lˈOkəl",
+  "private": "pɹˈIvət",
+  "secure": "səkjˈʊɹ",
+  "encrypted": "ɛnkɹˈɪptɪd",
+  "protocol": "pɹˈOtəkɔl",
+  "message": "mˈɛsɪʤ",
+  "messages": "mˈɛsɪʤɪz",
+  "channel": "ʧˈænəl",
+  "channels": "ʧˈænəlz",
+  "status": "stˈætəs",
+  "online": "ˈɔnlIn",
+  "offline": "ˈɔflIn",
+  "ready": "ɹˈɛdi",
+  "active": "ˈæktɪv",
+  "running": "ɹˈʌnɪŋ",
+  "complete": "kəmplˈit",
+  "completed": "kəmplˈitɪd",
+  "verified": "vˈɛɹəfId",
+  "parity": "pˈæɹəti",
+  "synthesis": "sˈɪnθəsɪs",
+  "engine": "ˈɛnʤən",
+  "system": "sˈɪstəm",
+  "systems": "sˈɪstəmz",
+  "data": "dˈAtə",
+  "code": "kˈOd",
+  "file": "fˈIl",
+  "files": "fˈIlz",
+  "server": "sˈɜɹvɚ",
+  "client": "klˈIənt",
+  "storage": "stˈɔɹɪʤ",
+  "memory": "mˈɛməɹi",
+  "speed": "spˈid",
+  "fast": "fˈæst",
+  "latency": "lˈAtənsi",
+  "live": "lˈIv",
+
+  // Greetings & common function words
+  "hello": "həlˈO",
+  "hi": "hˈI",
+  "hey": "hˈA",
+  "welcome": "wˈɛlkəm",
+  "goodbye": "ɡʊdbˈI",
+  "bye": "bˈI",
+  "please": "plˈiz",
+  "thank": "θˈæŋk",
+  "thanks": "θˈæŋks",
+  "yes": "jˈɛs",
+  "no": "nˈO",
+  "okay": "OkˈA",
+  "ok": "OkˈA",
+  "the": "ðə",
+  "a": "ə",
+  "an": "æn",
+  "and": "ænd",
+  "or": "ɔɹ",
+  "but": "bʌt",
+  "if": "ɪf",
+  "then": "ðˈɛn",
+  "else": "ˈɛls",
+  "when": "wˈɛn",
+  "where": "wˈɛɹ",
+  "what": "wˈʌt",
+  "which": "wˈɪʧ",
+  "who": "hˈu",
+  "why": "wˈI",
+  "how": "hˈW",
+  "from": "fɹˈʌm",
+  "to": "tu",
+  "of": "ʌv",
+  "in": "ɪn",
+  "on": "ɑn",
+  "at": "æt",
+  "by": "bˈI",
+  "for": "fɔɹ",
+  "with": "wɪð",
+  "without": "wɪðˈWt",
+  "about": "əbˈWt",
+  "into": "ˈɪntu",
+  "through": "θɹˈu",
+  "over": "ˈOvɚ",
+  "under": "ˈʌndɚ",
+  "between": "bətwˈin",
+  "after": "ˈæftɚ",
+  "before": "bəfˈɔɹ",
+  "during": "dˈʊɹɪŋ",
+  "as": "æz",
+  "is": "ɪz",
+  "are": "ɑɹ",
+  "was": "wʌz",
+  "were": "wɜɹ",
+  "be": "bi",
+  "been": "bɪn",
+  "being": "bˈiɪŋ",
+  "have": "hˈæv",
+  "has": "hˈæz",
+  "had": "hˈæd",
+  "do": "du",
+  "does": "dʌz",
+  "did": "dɪd",
+  "done": "dˈʌn",
+  "will": "wɪl",
+  "would": "wʊd",
+  "can": "kæn",
+  "could": "kʊd",
+  "should": "ʃʊd",
+  "may": "mˈA",
+  "might": "mˈIt",
+  "must": "mˈʌst",
+  "not": "nˈɑt",
+  "don't": "dˈOnt",
+  "can't": "kˈænt",
+  "won't": "wˈOnt",
+  "it's": "ɪts",
+  "i'm": "ˈIm",
+  "we're": "wˈɪɹ",
+  "you're": "jˈʊɹ",
+  "that's": "ðˈæts",
+  "there's": "ðˈɛɹz",
+  "i": "ˈI",
+  "me": "mi",
+  "my": "mˈI",
+  "we": "wi",
+  "us": "ʌs",
+  "our": "ˈWɚ",
+  "you": "ju",
+  "your": "jʊɹ",
+  "he": "hi",
+  "him": "hɪm",
+  "his": "hɪz",
+  "she": "ʃi",
+  "her": "hɜɹ",
+  "it": "ɪt",
+  "its": "ɪts",
+  "they": "ðˈA",
+  "them": "ðˈɛm",
+  "their": "ðˈɛɹ",
+  "this": "ðˈɪs",
+  "that": "ðˈæt",
+  "these": "ðˈiz",
+  "those": "ðˈOz",
+  "here": "hˈɪɹ",
+  "there": "ðˈɛɹ",
+  "all": "ˈɔl",
+  "every": "ˈɛvɹi",
+  "each": "ˈiʧ",
+  "some": "sˈʌm",
+  "any": "ˈɛni",
+  "many": "mˈɛni",
+  "more": "mˈɔɹ",
+  "most": "mˈOst",
+  "other": "ˈʌðɚ",
+  "such": "sˈʌʧ",
+  "only": "ˈOnli",
+  "also": "ˈɔlsO",
+  "just": "ʤˈʌst",
+  "now": "nˈW",
+  "very": "vˈɛɹi",
+  "well": "wˈɛl",
+  "good": "ɡˈʊd",
+  "great": "ɡɹˈAt",
+  "new": "nˈu",
+  "first": "fˈɜɹst",
+  "last": "lˈæst",
+  "next": "nˈɛkst",
+  "real": "ɹˈil",
+  "true": "tɹˈu",
+  "false": "fˈɔls",
+  "full": "fˈʊl",
+  "open": "ˈOpən",
+  "close": "klˈOz",
+  "start": "stˈɑɹt",
+  "stop": "stˈɑp",
+  "run": "ɹˈʌn",
+  "work": "wˈɜɹk",
+  "works": "wˈɜɹks",
+  "working": "wˈɜɹkɪŋ",
+  "make": "mˈAk",
+  "made": "mˈAd",
+  "use": "jˈuz",
+  "using": "jˈuzɪŋ",
+  "build": "bˈɪld",
+  "built": "bˈɪlt",
+  "send": "sˈɛnd",
+  "sent": "sˈɛnt",
+  "read": "ɹˈid",
+  "write": "ɹˈIt",
+  "check": "ʧˈɛk",
+  "test": "tˈɛst",
+  "tests": "tˈɛsts",
+  "speak": "spˈik",
+  "speaking": "spˈikɪŋ",
+  "listen": "lˈɪsən",
+  "hear": "hˈɪɹ",
+  "say": "sˈA",
+  "said": "sˈɛd",
+  "know": "nˈO",
+  "think": "θˈɪŋk",
+  "see": "sˈi",
+  "look": "lˈʊk",
+  "time": "tˈIm",
+  "day": "dˈA",
+  "today": "tədˈA",
+  "world": "wˈɜɹld",
+  "people": "pˈipəl",
+  "user": "jˈuzɚ",
+  "name": "nˈAm",
+  "way": "wˈA",
+  "thing": "θˈɪŋ",
+  "things": "θˈɪŋz",
+  "part": "pˈɑɹt",
+  "place": "plˈAs",
+  "case": "kˈAs",
+  "point": "pˈYnt",
+  "right": "ɹˈIt",
+  "left": "lˈɛft",
+  "high": "hˈI",
+  "low": "lˈO",
+  "long": "lˈɔŋ",
+  "short": "ʃˈɔɹt",
+  "big": "bˈɪɡ",
+  "small": "smˈɔl",
+  "clear": "klˈɪɹ",
+  "clean": "klˈin",
+  "pure": "pjˈʊɹ",
+
+  // Numbers
+  "0": "zˈɪɹO",
+  "1": "wˈʌn",
+  "2": "tˈu",
+  "3": "θɹˈi",
+  "4": "fˈɔɹ",
+  "5": "fˈIv",
+  "6": "sˈɪks",
+  "7": "sˈɛvən",
+  "8": "ˈAt",
+  "9": "nˈIn",
+  "10": "tˈɛn",
+  "11": "ɪlˈɛvən",
+  "12": "twˈɛlv",
+  "13": "θɜɹtˈin",
+  "14": "fɔɹtˈin",
+  "15": "fɪftˈin",
+  "16": "sɪkstˈin",
+  "17": "sɛvəntˈin",
+  "18": "Atˈin",
+  "19": "nIntˈin",
+  "20": "twˈɛnti",
+  "30": "θˈɜɹti",
+  "40": "fˈɔɹti",
+  "50": "fˈɪfti",
+  "60": "sˈɪksti",
+  "70": "sˈɛvənti",
+  "80": "ˈAti",
+  "90": "nˈInti",
+  "100": "hˈʌndɹəd",
+  "1000": "θˈWzənd",
+  "zero": "zˈɪɹO",
+  "one": "wˈʌn",
+  "two": "tˈu",
+  "three": "θɹˈi",
+  "four": "fˈɔɹ",
+  "five": "fˈIv",
+  "six": "sˈɪks",
+  "seven": "sˈɛvən",
+  "eight": "ˈAt",
+  "nine": "nˈIn",
+  "ten": "tˈɛn"
+};
+
+const PHONEMIZER_VOWELS = new Set(["a", "e", "i", "o", "u", "y"]);
+const PHONEMIZER_SOFT_CG = new Set(["e", "i", "y"]);
+const PHONEMIZER_TOKEN_RE = /[A-Za-z0-9]+(?:'[A-Za-z]+)?|[.,!?;:—…"()“”]/g;
+const PHONEMIZER_NO_SPACE_BEFORE = new Set([".", ",", "!", "?", ";", ":", "…", ")", "”"]);
+const PHONEMIZER_NO_SPACE_AFTER = new Set(["(", "“"]);
+
+function g2pFallback(word) {
+  const n = word.length;
+  let hasPriorVowel = false;
+  if (n > 2 && word[n - 1] === "e" && !PHONEMIZER_VOWELS.has(word[n - 2])) {
+    for (let k = 0; k < n - 2; k++) {
+      if (PHONEMIZER_VOWELS.has(word[k])) {
+        hasPriorVowel = true;
+        break;
+      }
+    }
+  }
+  const silentE = hasPriorVowel;
+  const limit = silentE ? n - 1 : n;
+  let out = "";
+  let stressed = false;
+  const emitV = (ph) => {
+    if (!stressed) {
+      out += "ˈ";
+      stressed = true;
+    }
+    out += ph;
+  };
+  let i = 0;
+  while (i < limit) {
+    const rem = limit - i;
+    const s3 = rem >= 3 ? word.slice(i, i + 3) : null;
+    const s2 = rem >= 2 ? word.slice(i, i + 2) : null;
+    const c = word[i];
+    const nextC = (i + 1 < limit) ? word[i + 1] : null;
+    if (s3 === "igh") { emitV("I"); i += 3; }
+    else if (s3 === "tch") { out += "ʧ"; i += 3; }
+    else if (s3 === "dge") { out += "ʤ"; i += 3; }
+    else if (s3 === "ing") { emitV("ɪ"); out += "ŋ"; i += 3; }
+    else if (s2 === "sh") { out += "ʃ"; i += 2; }
+    else if (s2 === "ch") { out += "ʧ"; i += 2; }
+    else if (s2 === "th") { out += "θ"; i += 2; }
+    else if (s2 === "ph") { out += "f"; i += 2; }
+    else if (s2 === "wh") { out += "w"; i += 2; }
+    else if (s2 === "ng") { out += "ŋ"; i += 2; }
+    else if (s2 === "ck") { out += "k"; i += 2; }
+    else if (s2 === "qu") { out += "kw"; i += 2; }
+    else if (s2 === "ee") { emitV("i"); i += 2; }
+    else if (s2 === "ea") { emitV("i"); i += 2; }
+    else if (s2 === "oo") { emitV("u"); i += 2; }
+    else if (s2 === "ou") { emitV("W"); i += 2; }
+    else if (s2 === "ow") { emitV("O"); i += 2; }
+    else if (s2 === "ai") { emitV("A"); i += 2; }
+    else if (s2 === "ay") { emitV("A"); i += 2; }
+    else if (s2 === "oi") { emitV("Y"); i += 2; }
+    else if (s2 === "oy") { emitV("Y"); i += 2; }
+    else if (s2 === "oa") { emitV("O"); i += 2; }
+    else if (s2 === "au") { emitV("ɔ"); i += 2; }
+    else if (s2 === "aw") { emitV("ɔ"); i += 2; }
+    else if (s2 === "ie") { emitV("i"); i += 2; }
+    else if (s2 === "ar") { emitV("ɑɹ"); i += 2; }
+    else if (s2 === "or") { emitV("ɔɹ"); i += 2; }
+    else if (s2 === "er") { emitV("ɚ"); i += 2; }
+    else if (s2 === "ir") { emitV("ɜɹ"); i += 2; }
+    else if (s2 === "ur") { emitV("ɜɹ"); i += 2; }
+    else if (nextC !== null && c === nextC && !PHONEMIZER_VOWELS.has(c)) {
+      i += 1;
+    } else {
+      switch (c) {
+        case "a": emitV(silentE ? "A" : "æ"); break;
+        case "e": emitV(silentE ? "i" : "ɛ"); break;
+        case "i": emitV(silentE ? "I" : "ɪ"); break;
+        case "o": emitV(silentE ? "O" : "ɑ"); break;
+        case "u": emitV(silentE ? "u" : "ʌ"); break;
+        case "y": if (i === 0) out += "j"; else emitV("i"); break;
+        case "b": out += "b"; break;
+        case "c": out += PHONEMIZER_SOFT_CG.has(nextC) ? "s" : "k"; break;
+        case "d": out += "d"; break;
+        case "f": out += "f"; break;
+        case "g": out += PHONEMIZER_SOFT_CG.has(nextC) ? "ʤ" : "ɡ"; break;
+        case "h": out += "h"; break;
+        case "j": out += "ʤ"; break;
+        case "k": out += "k"; break;
+        case "l": out += "l"; break;
+        case "m": out += "m"; break;
+        case "n": out += "n"; break;
+        case "p": out += "p"; break;
+        case "q": out += "k"; break;
+        case "r": out += "ɹ"; break;
+        case "s": out += "s"; break;
+        case "t": out += "t"; break;
+        case "v": out += "v"; break;
+        case "w": out += "w"; break;
+        case "x": out += "ks"; break;
+        case "z": out += "z"; break;
+        default: break;
+      }
+      i += 1;
+    }
+  }
+  return out;
+}
+
+function phonemizeWord(rawWord) {
+  const w = rawWord.toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(KOKORO_LEXICON, w)) {
+    return KOKORO_LEXICON[w];
+  }
+  if (/^\d+$/.test(w)) {
+    return [...w].map((d) => KOKORO_LEXICON[d] || "").join(" ");
+  }
+  if (w.length > 4 && w.endsWith("tion")) {
+    return g2pFallback(w.slice(0, w.length - 4)) + "ʃən";
+  }
+  if (w.length > 4 && w.endsWith("sion")) {
+    return g2pFallback(w.slice(0, w.length - 4)) + "ʒən";
+  }
+  if (w.length > 4 && w.endsWith("ing")) {
+    const stem = w.slice(0, w.length - 3);
+    if (Object.prototype.hasOwnProperty.call(KOKORO_LEXICON, stem)) {
+      return KOKORO_LEXICON[stem] + "ɪŋ";
+    }
+  }
+  if (w.length > 3 && w.endsWith("ed")) {
+    const stem = w.slice(0, w.length - 2);
+    if (Object.prototype.hasOwnProperty.call(KOKORO_LEXICON, stem)) {
+      return KOKORO_LEXICON[stem] + "d";
+    }
+  }
+  if (w.length > 2 && w.endsWith("s")) {
+    const stem = w.slice(0, w.length - 1);
+    if (Object.prototype.hasOwnProperty.call(KOKORO_LEXICON, stem)) {
+      return KOKORO_LEXICON[stem] + "z";
+    }
+  }
+  if (w.length > 3 && w.endsWith("ly")) {
+    const stem = w.slice(0, w.length - 2);
+    if (Object.prototype.hasOwnProperty.call(KOKORO_LEXICON, stem)) {
+      return KOKORO_LEXICON[stem] + "li";
+    }
+  }
+  return g2pFallback(w);
+}
+
+export function phonemize(text) {
+  const trimmed = String(text ?? "").trim();
+  const tokens = trimmed.match(PHONEMIZER_TOKEN_RE) || [];
+  let prev = null;
+  let out = "";
+  for (const tok of tokens) {
+    const isPunct = tok.length === 1 && !/[A-Za-z0-9]/.test(tok[0]);
+    const ph = isPunct ? tok : phonemizeWord(tok);
+    if (prev !== null && !PHONEMIZER_NO_SPACE_BEFORE.has(tok) && !PHONEMIZER_NO_SPACE_AFTER.has(prev)) {
+      out += " ";
+    }
+    out += ph;
+    prev = tok;
+  }
+  return out;
+}
+
+export function phonemesToInputIds(phonemes, vocab = KOKORO_VOCAB) {
+  const s = String(phonemes ?? "");
+  const ids = [];
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (Object.prototype.hasOwnProperty.call(vocab, ch)) {
+      ids.push(vocab[ch]);
+    }
+  }
+  if (ids.length + 2 > KOKORO_MAX_CONTEXT_LENGTH) {
+    throw new Error(`Kokoro phoneme sequence exceeds MAX-CONTEXT-LENGTH (${KOKORO_MAX_CONTEXT_LENGTH})`);
+  }
+  return [0, ...ids, 0];
+}
+
+export function textToInputIds(text, vocab = KOKORO_VOCAB) {
+  const ipa = phonemize(text);
+  const inputIds = phonemesToInputIds(ipa, vocab);
+  return { ipa, inputIds };
+}
+
 export class KokoroWebGpuRunner {
+  static phonemize(text) {
+    return phonemize(text);
+  }
+
+  static textToInputIds(text, vocab = KOKORO_VOCAB) {
+    return textToInputIds(text, vocab);
+  }
+
   constructor(baseUrl = "") {
     this.baseUrl = baseUrl;
     this.device = null;
@@ -1368,3 +1890,5 @@ export class KokoroWebGpuRunner {
     };
   }
 }
+
+export const KokoroWebGPURunner = KokoroWebGpuRunner;

@@ -165,18 +165,12 @@ async function speakText(text, voiceId) {
   if (engine === "einsum-webgpu") {
     try {
       $("tts-status").textContent = `clj-einsum :uop-webgpu (${voice})...`;
+      const { KokoroWebGPURunner } = await import("./kokoro-webgpu-runner.js");
       if (!einsumWebGpuRunner) {
-        const { KokoroWebGpuRunner } = await import("./kokoro-webgpu-runner.js");
-        einsumWebGpuRunner = new KokoroWebGpuRunner("");
+        einsumWebGpuRunner = new KokoroWebGPURunner("");
       }
-      const phRes = await fetch("/api/kokoro-phonemize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text })
-      });
-      if (!phRes.ok) throw new Error(`phonemize HTTP ${phRes.status}`);
-      const ph = await phRes.json();
-      const out = await einsumWebGpuRunner.synthesize(ph.input_ids, voice, { speed: 1.0 });
+      const ph = KokoroWebGPURunner.textToInputIds(text);
+      const out = await einsumWebGpuRunner.synthesize(ph.inputIds, voice, { speed: 1.0 });
       unlockAudioSync();
       const buf = audioCtx.createBuffer(1, out.pcm.length, out.sampleRate || 24000);
       buf.getChannelData(0).set(out.pcm);

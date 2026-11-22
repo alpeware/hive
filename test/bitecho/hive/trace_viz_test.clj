@@ -113,6 +113,8 @@
         (testing "Externalized chat.js and trace-viz.js have ZERO cdn.jsdelivr.net and use v1.1.0 + self-hosted paths"
           (is (not (str/includes? chat-js "cdn.jsdelivr.net")))
           (is (not (str/includes? viz-js "cdn.jsdelivr.net")))
+          (is (not (str/includes? chat-js "/api/kokoro-phonemize")))
+          (is (str/includes? chat-js "textToInputIds"))
           (is (str/includes? chat-js "/app/vendor/kokoro-js.mjs"))
           (is (str/includes? chat-js "/app/vendor/transformers.mjs"))
           (is (str/includes? chat-js "/app/vendor/vad-web.mjs"))
@@ -151,6 +153,8 @@
             (is (.isFile runner-file))
             (is (not (str/includes? runner-js "cdn.jsdelivr.net")))
             (is (str/includes? runner-js "KokoroWebGpuRunner"))
+            (is (str/includes? runner-js "export function phonemize"))
+            (is (str/includes? runner-js "export function textToInputIds"))
             (is (str/includes? index-html "clj-einsum (:uop-webgpu Kokoro-82M Full Speech)"))
             (is (str/includes? viz-html "clj-einsum (:uop-webgpu Kokoro-82M Full Speech)"))
             (is (= (viz/sha256-bytes runner-bs) (:cid runner-entry)))
