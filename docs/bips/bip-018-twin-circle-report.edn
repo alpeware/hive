@@ -1,0 +1,185 @@
+{:schema :bitecho/bip-twin-circle-report-v1,
+ :open-questions-resolved
+ {:q1-active-blobs-vs-32mb-lru
+  "Separate pinned <= 16 MiB web-app bundle ceiling (active + LKG /app/ assets) from 32 MiB chunk hot-LRU so chunk storms never evict /app/ assets; P-MEM-1 bounds total process RSS <= 200 MiB (delta <= 32 MiB).",
+  :q2-e2-micro-watchdog
+  "Lightweight local OpenRC/cron watchdog probing 127.0.0.1 /statusz every 60s (3 consecutive failures -> restart bitecho-infra with exponential backoff/cooldown 60s->180s->600s + local incident marker) + OOMScoreAdjust (sshd -500, bitecho-infra 200).",
+  :q3-status-amplification
+  "Pre-rendered ~2 KiB in-memory snapshot refreshed every 5s (Cache-Control: public, max-age=5, stale-while-revalidate=10; zero per-request disk I/O or EDN serialization) + 60 req/min/IP rate limit returning 429 Retry-After: 5 with counted :diagnose {:reason :status-rate-limited}.",
+  :q4-slo-split
+  "Report all three SLOs side-by-side: Consensus/Finality SLO (100%, 0 ms), Edge Fleet SLO (2/3 healthy = degraded, ns1 down 88.6 min), and Single-Relay Client/Telemetry SLO (honest 45.6 s breach -> six-nines NOT met, directly motivating Track 3)."},
+ :rewards
+ {:team-reward 1.0,
+  :agent-rewards
+  {:simon 1.0, :axiom 1.0, :nexus 1.0, :vector 1.0, :lumen 1.0},
+  :metrics
+  {:status :fixed-point-2,
+   :invalid-actions 0,
+   :chaos-all-green? true,
+   :sim-consent-isolated? true,
+   :turn-count 43}},
+ :shaped-proposal-cid
+ "567a6113bc9948fd9aca10fb1f7b33ba48fd177390109f6c69e1abe036a11298",
+ :real-consent-required? true,
+ :advisory-only? true,
+ :sim-consent-receipt
+ {:simulation? true,
+  :advisory-only true,
+  :proposal-cid
+  "567a6113bc9948fd9aca10fb1f7b33ba48fd177390109f6c69e1abe036a11298",
+  :round 2,
+  :verdicts
+  {:simon :consent,
+   :axiom :consent,
+   :nexus :consent,
+   :vector :consent,
+   :lumen :consent},
+  :standing-objections [],
+  :open-addenda
+  [{:id "F-simon-1",
+    :text
+    "Report 3-way SLO split side-by-side (Q4) and record all-frontier model rotation.",
+    :owner :simon,
+    :target-milestone "BIP-018-Draft1"}
+   {:id "F-lumen-1",
+    :text
+    "Verify Rule 1-6 compliance, counted :diagnose catalog, and CLI flag-inventory co-commit.",
+    :owner :lumen,
+    :target-milestone "BIP-018-Draft1"}],
+  :receipt-cid
+  "ddf20d14e4a95d883529fcd7bd8a87604d7e91116a91ab8a94bb17ca9544eaf9"},
+ :trace
+ {:subnet-merkle-root
+  "2a0eae9690b2ab95addd714e9227f5f3c59380ebc038b5d7564ac17f58aa4f26",
+  :turn-count 43,
+  :verification
+  {:ok? true,
+   :trace-version 2,
+   :turn-count 43,
+   :header-cid
+   "28c3c1214a51e0e9039b55dcba52e8919e24c3a78607bdc8f0542cf97ab9f8c0",
+   :merkle-root
+   "409fd6132872a8c3c597497c7b3c6ecb53edfd678132cf7bb6ffdf61644ae0c9",
+   :pointer-path
+   "runs/governance-closed-loop-bip-018-advisory/bip-018-advisory"},
+  :trace/version 2,
+  :status :fixed-point-2,
+  :header-cid
+  "28c3c1214a51e0e9039b55dcba52e8919e24c3a78607bdc8f0542cf97ab9f8c0",
+  :pointer-path
+  "runs/governance-closed-loop-bip-018-advisory/bip-018-advisory",
+  :rounds-executed 2,
+  :merkle-root
+  "409fd6132872a8c3c597497c7b3c6ecb53edfd678132cf7bb6ffdf61644ae0c9"},
+ :genesis-monte-carlo
+ {:seed 20261122,
+  :trials-per-fork 50,
+  :forecast-root-cid
+  "f6d67c0507eda2d7baa13903d4b162e742466bc56be9d0b274c7b5dc797cd7c1",
+  :selected-fork
+  {:fork-id :fork-a-foundation-balanced,
+   :label
+   "Foundation/Builders (100M ECH, 2-of-3 extension circles, 5M unallocated buffer)",
+   :trials 50,
+   :successes 49,
+   :path-likelihood 0.98,
+   :mean-milestones 10.98,
+   :total-rejected-ops 51,
+   :all-trials-conserved? true}},
+ :model-rotation
+ {:directive
+  "Simon directive 2026-11-22 (Axiom seq 584 / Nexus seq 507): All-frontier 5-seat twin circle; GPT-OSS 120B retired.",
+  :retired-models ["gpt-oss-120b-medium"],
+  :all-frontier? true,
+  :roster
+  [{:seat-id :simon,
+    :role :human-anchor,
+    :model-selector "claude-opus-5-5-high",
+    :prompt-cid
+    "ff26581a1ecaa9c54ca62cc889031d9bd61ca495905317e8bc2ca6c1a72e2216",
+    :selection-status :vector-starting-point}
+   {:seat-id :axiom,
+    :role :architect-auditor,
+    :model-selector "gemini-4-argon-high",
+    :prompt-cid
+    "eeebba49a2e6c69bd878f350b9917542a6310e233365802ae462866abebc3ef4",
+    :selection-status :all-frontier-rotation-2026-11-22}
+   {:seat-id :nexus,
+    :role :builder-lead,
+    :model-selector "claude-sonnet-5-5-high",
+    :prompt-cid
+    "c8d08532ae87fce4fd6078d93209da1ce8fdd3a2191ad72467bd12c35f8f84f2",
+    :selection-status :proposed-for-nexus}
+   {:seat-id :vector,
+    :role :soak-runtime-edge,
+    :model-selector "gemini-4-carbon-high",
+    :prompt-cid
+    "518e17edfd4ded6f8ee6cc6fa18375749f4bd3af84331fc73fc817a9add4d237",
+    :selection-status :confirmed}
+   {:seat-id :lumen,
+    :role :governance-architect,
+    :model-selector "gemini-4-hydrogen-high",
+    :prompt-cid
+    "a954c14bd786e668b86ed83637d796a25c52e1fd67de29b748f45f7e3af15d0d",
+    :selection-status :proposed-for-lumen}]},
+ :round-1-paramount-objections-resolved
+ [{:seat :axiom,
+   :issue
+   "Split-brain / stale-relay HTTP 200 OK trap & unvalidated postmortem EDN",
+   :resolution
+   "Demote relays lagging > 6 finalized epochs behind healthy peers identically to 5xx in pure bitecho.net.relay-pool with counted :diagnose {:reason :relay-stale-epoch}; enforce machine-verifiable defspec schema on INC-2026-11-22-ns1.edn linking exact sla/latest.edn and telemetry digest CIDs."}
+  {:seat :nexus,
+   :issue
+   "Operator lockout risk on sshd_config reload, e2-micro watchdog (Q2), and /status amplification (Q3)",
+   :resolution
+   "Require live key-only SSH login check before sshd reload; add 60s local OpenRC/cron /statusz watchdog (3 failures -> backoff restart + local incident marker) + OOMScoreAdjust (sshd -500, bitecho-infra 200); pre-render ~2 KiB /status in-memory snapshot every 5s (Cache-Control: public, max-age=5, stale-while-revalidate=10) + 60 req/min/IP rate limit (429 Retry-After: 5)."}
+  {:seat :vector,
+   :issue
+   "Web-app :active-blobs eviction under chunk storms (Q1) and light-node raw Uint8Array stdout IPC timeout",
+   :resolution
+   "Separate pinned <= 16 MiB web-app bundle ceiling from 32 MiB chunk hot-LRU while P-MEM-1 bounds total RSS <= 200 MiB; strip raw Uint8Array bytes from artifact-replicated stdout logs in BOTH bitecho-full-node.cjs AND bitecho-light-node.cjs."}],
+ :scenario-id "governance-closed-loop-bip-018-advisory",
+ :seed 20261122,
+ :bip-id "BIP-018",
+ :inputs
+ {:bip-018-draft0-cid
+  "59a1f3a4d56c949537494eb5db37af880ad11e59c5d0c63b844c1fc142517d4b",
+  :inc-2026-11-22-ns1-draft0-cid
+  "6180bc94f6eedec3d1ac52c5e4a52f55fe89b5baefeccf203941119ecb15cc68",
+  :values-cid
+  "2b6d6a6a794ef168a00184faf35d3b77efb083c24671e3ff1092a432405f9448"},
+ :open-addenda
+ [{:id "F-simon-1",
+   :text
+   "Report 3-way SLO split side-by-side (Q4) and record all-frontier model rotation.",
+   :owner :simon,
+   :target-milestone "BIP-018-Draft1"}
+  {:id "F-lumen-1",
+   :text
+   "Verify Rule 1-6 compliance, counted :diagnose catalog, and CLI flag-inventory co-commit.",
+   :owner :lumen,
+   :target-milestone "BIP-018-Draft1"}],
+ :top-loop-gate
+ {:base-repo-hash "88e18d4",
+  :phase :pending-promotion,
+  :sim-promotion-gate-fail-closed? true,
+  :gate-effects
+  [[:diagnose
+    {:reason :invalid-or-simulated-consent-receipt,
+     :simulation? true,
+     :patch-cid
+     "567a6113bc9948fd9aca10fb1f7b33ba48fd177390109f6c69e1abe036a11298"}]],
+  :chain-verified? true,
+  :diagnostics
+  {:rejected-promotions 1,
+   :rollbacks 0,
+   :events
+   [{:reason :invalid-or-simulated-consent-receipt,
+     :simulation? true,
+     :patch-cid
+     "567a6113bc9948fd9aca10fb1f7b33ba48fd177390109f6c69e1abe036a11298"}]}},
+ :simulated-consent-counts-as-real? false,
+ :standing-objections [],
+ :base-repo-hash "88e18d4",
+ :companion-incident-id "INC-2026-11-22-ns1",
+ :run-id "bip-018-advisory"}

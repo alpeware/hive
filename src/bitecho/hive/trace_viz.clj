@@ -124,7 +124,7 @@
     :petname "axiom"
     :label "Axiom"
     :role "Governance & Strategy"
-    :model "gpt-oss-120b-medium"
+    :model "gemini-4-argon-high"
     :voice_id "bm_george"
     :color "#38bdf8"
     :angle_deg -18}

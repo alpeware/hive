@@ -46,12 +46,12 @@
   [:present :questions :reactions :consent-round])
 
 (def default-model-pool
-  "Verified `supported-agy-models` pool spanning 3 independent model families."
+  "Verified all-frontier `supported-agy-models` pool (GPT-OSS 120B retired per Simon directive 2026-11-22)."
   ["claude-opus-5-5-high"
    "claude-sonnet-5-5-high"
+   "gemini-4-argon-high"
    "gemini-4-carbon-high"
-   "gemini-4-hydrogen-high"
-   "gpt-oss-120b-medium"])
+   "gemini-4-hydrogen-high"])
 
 (defn sha256-str
   "Computes lowercase 64-char SHA-256 hex digest of a UTF-8 string."
@@ -85,8 +85,8 @@
     :twin-of :axiom
     :role :architect-auditor
     :harness :agy
-    :model-selector "gpt-oss-120b-medium"
-    :selection-status :vector-starting-point
+    :model-selector "gemini-4-argon-high"
+    :selection-status :all-frontier-rotation-2026-11-22
     :prompt-path "dist/hive/twin-prompt-axiom.md"
     :prompt-cid "eeebba49a2e6c69bd878f350b9917542a6310e233365802ae462866abebc3ef4"
     :prompt-status :final}
