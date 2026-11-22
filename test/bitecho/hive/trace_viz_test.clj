@@ -136,7 +136,20 @@
               (is (= (viz/sha256-bytes bs) (:cid entry)))
               (is (= (alength bs) (:size entry)))
               (is (= expected-ct (:media-type entry)))
-              (is (= (viz/sha384-sri bs) (:sri entry)))))))
+              (is (= (viz/sha384-sri bs) (:sri entry))))))
+
+        (testing "M5b: kokoro-webgpu-runner.js is emitted with zero CDN and honest Kokoro-82M Full Speech UI labels"
+          (let [runner-file (io/file tmp-dir "kokoro-webgpu-runner.js")
+                runner-js (slurp runner-file)
+                runner-bs (Files/readAllBytes (.toPath runner-file))
+                runner-entry (get-in assets-edn [:assets :kokoro-webgpu-runner-js])]
+            (is (.isFile runner-file))
+            (is (not (str/includes? runner-js "cdn.jsdelivr.net")))
+            (is (str/includes? runner-js "KokoroWebGpuRunner"))
+            (is (str/includes? index-html "clj-einsum (:uop-webgpu Kokoro-82M Full Speech)"))
+            (is (str/includes? viz-html "clj-einsum (:uop-webgpu Kokoro-82M Full Speech)"))
+            (is (= (viz/sha256-bytes runner-bs) (:cid runner-entry)))
+            (is (= (viz/sha384-sri runner-bs) (:sri runner-entry))))))
       (finally
         (doseq [f (reverse (file-seq tmp-dir))]
           (.delete f))))))

@@ -36,6 +36,7 @@ function messageDedupeKey(ev) {
   return `seq:${ev.type || ""}|${scope}|${ev.from || ""}|${ev.seq ?? ""}|${ev.text || ""}`;
 }
 let kokoroModel = null;
+let einsumWebGpuRunner = null;
 let audioCtx = null;
 let activeTtsSource = null;
 
@@ -159,6 +160,36 @@ async function speakText(text, voiceId) {
     const u = new SpeechSynthesisUtterance(text);
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
+    return;
+  }
+  if (engine === "einsum-webgpu") {
+    try {
+      $("tts-status").textContent = `clj-einsum :uop-webgpu (${voice})...`;
+      if (!einsumWebGpuRunner) {
+        const { KokoroWebGpuRunner } = await import("./kokoro-webgpu-runner.js");
+        einsumWebGpuRunner = new KokoroWebGpuRunner("");
+      }
+      const phRes = await fetch("/api/kokoro-phonemize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      if (!phRes.ok) throw new Error(`phonemize HTTP ${phRes.status}`);
+      const ph = await phRes.json();
+      const out = await einsumWebGpuRunner.synthesize(ph.input_ids, voice, { speed: 1.0 });
+      unlockAudioSync();
+      const buf = audioCtx.createBuffer(1, out.pcm.length, out.sampleRate || 24000);
+      buf.getChannelData(0).set(out.pcm);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      activeTtsSource = src;
+      src.onended = () => { if (activeTtsSource === src) activeTtsSource = null; };
+      src.start(0);
+      $("tts-status").textContent = `Played via clj-einsum :uop-webgpu (${Math.round(out.latencyMs)} ms, RTF ${out.rtf.toFixed(2)})`;
+    } catch (e) {
+      $("tts-status").textContent = `uop-webgpu error: ${e.message}`;
+    }
     return;
   }
   if (engine === "einsum-cpu") {

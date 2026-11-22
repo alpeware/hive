@@ -15,7 +15,8 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [einsum.core :as ein]
-            [einsum.models.kokoro :as kokoro])
+            [einsum.models.kokoro :as kokoro]
+            [einsum.models.kokoro-phonemizer :as kokoro-phonemizer])
   (:import [com.sun.net.httpserver HttpExchange HttpHandler HttpServer]
            [java.io ByteArrayOutputStream]
            [java.net HttpURLConnection InetSocketAddress URI]
@@ -242,6 +243,8 @@
 (defonce ^:private kokoro-webgpu-buckets-cache
   (delay (kokoro/compile-kokoro-webgpu-buckets)))
 
+(def ^:private kokoro-webgpu-full-cache (atom {}))
+
 (defonce ^:private uop-cpu-ctx-cache
   (delay (ein/init-backend! :uop-cpu {:quiet? true})))
 
@@ -410,6 +413,47 @@
     (with-open [os (.getResponseBody ex)]
       (.write os body))))
 
+(defn- parse-query-params
+  [query]
+  (if (str/blank? query)
+    {}
+    (into {}
+          (for [pair (str/split query #"&")
+                :let [[k v] (str/split pair #"=" 2)]
+                :when (and k v)]
+            [k v]))))
+
+(defn- get-cached-kokoro-full-bundle
+  [t-tok f-frames]
+  (let [weights-file (io/file kokoro-weights-dir "kokoro-v1_0-folded.safetensors")
+        wpath (when (.isFile weights-file) (.getPath weights-file))
+        cache-key [t-tok f-frames]]
+    (if-let [cached (get @kokoro-webgpu-full-cache cache-key)]
+      cached
+      (let [bundle (if (and t-tok f-frames)
+                     (kokoro/compile-kokoro-full-webgpu-graph
+                      (cond-> {:t-tok t-tok :f-frames f-frames}
+                        wpath (assoc :weights-path wpath)))
+                     (kokoro/compile-kokoro-full-webgpu-buckets
+                      (cond-> {:frame-buckets [128 256 512] :t-tok (or t-tok 32)}
+                        wpath (assoc :weights-path wpath))))]
+        (swap! kokoro-webgpu-full-cache assoc cache-key bundle)
+        bundle))))
+
+(defn- send-file-stream!
+  [^HttpExchange ex content-type ^java.io.File f]
+  (if-not (.isFile f)
+    (send-response! ex 404 "application/json; charset=utf-8"
+                    (.getBytes (json/write-str {:error "file-not-found" :file (.getName f)}) "UTF-8"))
+    (let [hdrs (.getResponseHeaders ex)
+          len (.length f)]
+      (.set hdrs "Content-Type" content-type)
+      (.set hdrs "Cache-Control" "public, max-age=3600")
+      (.set hdrs "Access-Control-Allow-Origin" "*")
+      (.sendResponseHeaders ex 200 len)
+      (with-open [os (.getResponseBody ex)]
+        (Files/copy (.toPath f) os)))))
+
 (def ^:private upstream-relay-origins
   ["https://ns2.bitecho.org"
    "https://ns1.bitecho.org"
@@ -524,6 +568,11 @@
               js (if res (slurp res) (slurp "resources/trace_viz/trace-viz.js"))]
           (send-response! ex 200 "application/javascript; charset=utf-8" (.getBytes js "UTF-8")))
 
+        (= path "/kokoro-webgpu-runner.js")
+        (let [res (io/resource "trace_viz/kokoro-webgpu-runner.js")
+              js (if res (slurp res) (slurp "resources/trace_viz/kokoro-webgpu-runner.js"))]
+          (send-response! ex 200 "application/javascript; charset=utf-8" (.getBytes js "UTF-8")))
+
         (= path "/api/petnames")
         (let [body (json/write-str {:petnames (default-petname-voices)})]
           (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
@@ -536,6 +585,38 @@
         (let [bundles @kokoro-webgpu-buckets-cache
               body (json/write-str bundles)]
           (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
+
+        (= path "/api/kokoro-webgpu-full-bundle")
+        (let [qp (parse-query-params (.getRawQuery (.getRequestURI ex)))
+              t-tok (when-let [v (get qp "t_tok")] (Long/parseLong v))
+              f-frames (when-let [v (get qp "f_frames")] (Long/parseLong v))
+              bundle (get-cached-kokoro-full-bundle t-tok f-frames)
+              body (json/write-str bundle)]
+          (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
+
+        (= path "/api/kokoro-phonemize")
+        (let [req-body (slurp (.getRequestBody ex))
+              parsed (if (str/blank? req-body) {} (json/read-str req-body :key-fn keyword))
+              clean (let [s (sanitize-speech-text (str (or (:text parsed) "Hello from Bitecho Hive.")))]
+                      (if (str/blank? s) "Hello from Bitecho Hive." s))
+              {:keys [phonemes input-ids]} (kokoro-phonemizer/text->input-ids clean)
+              body (json/write-str {:text clean :phonemes phonemes :input_ids input-ids})]
+          (send-response! ex 200 "application/json; charset=utf-8" (.getBytes body "UTF-8")))
+
+        (= path "/api/kokoro-weights/folded.safetensors")
+        (send-file-stream! ex "application/octet-stream"
+                           (io/file kokoro-weights-dir "kokoro-v1_0-folded.safetensors"))
+
+        (= path "/api/kokoro-weights/m4-golden.safetensors")
+        (send-file-stream! ex "application/octet-stream"
+                           (io/file kokoro-weights-dir "kokoro-m4-e2e-golden.safetensors"))
+
+        (str/starts-with? path "/api/kokoro-weights/voice/")
+        (let [raw-id (subs path (count "/api/kokoro-weights/voice/"))
+              vid (if (re-matches #"[a-zA-Z0-9_]+" raw-id) raw-id "af_heart")
+              f (io/file kokoro-weights-dir (str vid ".safetensors"))
+              target (if (.isFile f) f (io/file kokoro-weights-dir "af_heart.safetensors"))]
+          (send-file-stream! ex "application/octet-stream" target))
 
         (= path "/api/tts/uop-cpu")
         (let [req-body (slurp (.getRequestBody ex))
@@ -626,8 +707,10 @@
         chat-js-raw (read-trace-viz-resource "chat.js")
         viz-html-raw (read-trace-viz-resource "index.html")
         viz-js-raw (read-trace-viz-resource "trace-viz.js")
+        runner-js-raw (read-trace-viz-resource "kokoro-webgpu-runner.js")
         chat-js-bytes (.getBytes chat-js-raw StandardCharsets/UTF_8)
         viz-js-bytes (.getBytes viz-js-raw StandardCharsets/UTF_8)
+        runner-js-bytes (.getBytes runner-js-raw StandardCharsets/UTF_8)
         chat-js-sri (sha384-sri chat-js-bytes)
         viz-js-sri (sha384-sri viz-js-bytes)
         index-html (render-production-chat-html chat-html-raw chat-js-sri)
@@ -644,7 +727,8 @@
           files [[:index-html "index.html" "text/html; charset=utf-8" index-bytes]
                  [:chat-js "chat.js" "application/javascript; charset=utf-8" chat-js-bytes]
                  [:trace-viz-html "trace-viz.html" "text/html; charset=utf-8" viz-bytes]
-                 [:trace-viz-js "trace-viz.js" "application/javascript; charset=utf-8" viz-js-bytes]]
+                 [:trace-viz-js "trace-viz.js" "application/javascript; charset=utf-8" viz-js-bytes]
+                 [:kokoro-webgpu-runner-js "kokoro-webgpu-runner.js" "application/javascript; charset=utf-8" runner-js-bytes]]
           assets (reduce
                   (fn [acc [k fname media-type ^bytes bs]]
                     (let [f (io/file dir fname)]

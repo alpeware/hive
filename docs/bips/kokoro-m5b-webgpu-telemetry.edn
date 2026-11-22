@@ -1,0 +1,82 @@
+{:schema :bitecho/kokoro-m5b-webgpu-telemetry-v1
+ :milestone "Kokoro-82M M5b (:uop-webgpu Full-Graph Export + Real WebGPU Parity & Timings + Hive Browser Wiring)"
+ :recorded-at "2026-11-21T23:58:02Z"
+ :repos {:clj-einsum {:commit "ade3aac"
+                      :ns "einsum.models.kokoro"
+                      :functions ["compile-kokoro-full-webgpu-graph"
+                                  "compile-kokoro-full-webgpu-buckets"
+                                  "export-kokoro-webgpu-bundle!"
+                                  "read-safetensors-manifest"
+                                  "kokoro-active-weight-keys"]}}
+ :runtime {:browser "Google Chrome 156.0.8078.47 (--headless=new --enable-unsafe-webgpu --use-gl=angle --use-angle=vulkan --enable-features=Vulkan)"
+           :webgpu-adapter {:vendor "intel"
+                            :architecture "xe-2lpg"
+                            :max-storage-buffer-binding-size 134217728
+                            :max-buffer-size 268435456
+                            :max-compute-workgroups-per-dimension 65535
+                            :max-storage-buffers-per-shader-stage 8}}
+ :model {:name "Kokoro-82M v1.0"
+         :folded-weights-file "kokoro-v1_0-folded.safetensors"
+         :total-tensors 459
+         :active-inference-tensors 457
+         :unused-pooler-tensors 2
+         :uop-wgsl-shader-count 86
+         :uop-kernel-template-count 60
+         :subgroup-extensions-used false
+         :fixed-frame-buckets [128 256 512]}
+ :test-utterance {:text "Hello from Bitecho Hive."
+                  :voice "af_heart"
+                  :phonemes "həlˈO fɹˈʌm bˈItɛkO hˈIv."
+                  :t-tok 27
+                  :total-frames 87
+                  :samples 52200
+                  :sample-rate 24000
+                  :duration-sec 2.175}
+ :execution-split
+ {:webgpu-uop-compiled-wgsl
+  ["Stage 1: CustomALBERT 12 shared layers (Q/K/V/dense/FFN/FFN_out linear) + bert_encoder"
+   "Stage 2a: DurationEncoder 3x BiLSTM (linear + lstm_cell_256) + predictor.lstm + duration_proj"
+   "Stage 2b: predictor.shared BiLSTM + F0.{0,1,2} & N.{0,1,2} (AdaIN1d, Conv1d, ConvTranspose1d pool) + F0_proj + N_proj"
+   "Stage 3: TextEncoder 3x Conv1d + BiLSTM (linear + lstm_cell_256)"
+   "Stage 4: Decoder (F0_conv, N_conv, asr_res, encode, decode.{0..3} AdaIN1d/Conv1d/ConvTranspose1d) + Generator (noise_convs.{0,1}, noise_res.{0,1}, ups.{0,1} ConvTranspose1d, 6x AdaINResBlock1, conv_post, CustomSTFT inverse ConvTranspose1d)"]
+  :webgpu-resident-helper-wgsl
+  ["ALBERT 12-head self-attention (mha_albert), LayerNorm, ChannelLayerNorm, AdaLayerNorm, NewGELU, Snake1D, LeakyReLU, residual add/avg3, 2D transpose, nearest-2x upsample, ReflectionPad1d, exp/sin STFT spec, squared-Hann overlap-add norm"]
+  :js-control-flow-glue
+  ["Token embedding row gathers (bert.embeddings, text_encoder.embedding) and 128-dim style fc linear vectors"
+   "Glue 1 (~5 KB readback): duration_logits sigmoid sum + banker's rounding (pred_dur) + expand_by_durations"
+   "Glue 2 (~1 KB readback): SourceModuleHnNSF (300x F0 upsample, linear interp, phase cumsum, 9 harmonics, l_linear, tanh) + ForwardSTFT (n_fft=20, hop=5) -> har [22, 120F+1] (~46.8 ms)"]}
+ :parity-vs-pytorch-m4-golden
+ {:pred-dur-exact true
+  :bert-dur {:max-abs-diff 8.106e-6 :pearson-corr 0.999999999996}
+  :duration-logits {:max-abs-diff 1.011e-4 :pearson-corr 0.9999999999996}
+  :f0-pred {:max-abs-diff 5.283e-4 :pearson-corr 0.9999999999998}
+  :n-pred {:max-abs-diff 7.629e-6 :pearson-corr 0.99999999999996}
+  :dec-encode {:max-abs-diff 6.661e-6 :pearson-corr 0.9999999999997}
+  :dec-decode {:max-abs-diff 9.103e-5 :pearson-corr 0.9999999999993}
+  :har-source {:max-abs-diff 2.448e-3 :pearson-corr 0.999996}
+  :audio-24khz {:max-abs-diff 9.090e-2 :pearson-corr 0.996742
+                :uop-cpu-baseline-corr 0.996745}}
+ :timings-ms
+ {:uop-cpu-baseline-ms 61400.0
+  :uop-cpu-baseline-rtf 28.23
+  :webgpu-cold {:total-ms 4036.0
+                :rtf 1.856
+                :speedup-vs-uop-cpu 15.21
+                :stage1-to-3a-ms 536.3
+                :stage2b-ms 70.8
+                :glue2-hn-nsf-stft-ms 43.8
+                :stage4-decoder-gen-ms 2160.2}
+  :webgpu-warm-run1 {:total-ms 2453.0
+                     :rtf 1.128
+                     :speedup-vs-uop-cpu 25.03
+                     :stage1-to-3a-ms 308.1
+                     :stage2b-ms 50.6
+                     :glue2-hn-nsf-stft-ms 46.8
+                     :stage4-decoder-gen-ms 2047.5}
+  :webgpu-warm-run2 {:total-ms 2478.6
+                     :rtf 1.140
+                     :speedup-vs-uop-cpu 24.77
+                     :stage1-to-3a-ms 317.3
+                     :stage2b-ms 53.1
+                     :glue2-hn-nsf-stft-ms 57.7
+                     :stage4-decoder-gen-ms 2050.4}}}
