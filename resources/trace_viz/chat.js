@@ -249,7 +249,238 @@ async function speakText(text, voiceId) {
 
 // ---------------------------------------------------------------------------
 // Local Browser STT (Moonshine Tiny / Whisper Tiny) + Silero VAD + Hysteresis
+// 100% Self-Hosted via BIP-017a Chunked Manifests + transformers.js customCache
 // ---------------------------------------------------------------------------
+
+const STT_CACHE_NAME = "bitecho-stt-v1";
+
+const SELF_HOSTED_STT_ASSETS = {
+  ortWasmManifest: {
+    manifestCid: "db0e879f2ad741c34f8089d4c934fcb4ef92172bcd8963c25858d5d74690ab27",
+    manifestBlobCid: "f63d896b4bace5de81ec2105bd07c1d14a3cc634e584142a8ee8c9aec43fd3d9",
+    totalSha256: "c46655e8a94afc45338d4cb2b840475f88e5012d524509916e505079c00bfa39",
+    totalBytes: 21596019,
+    contentType: "application/wasm"
+  },
+  "onnx-community/moonshine-tiny-ONNX": {
+    "config.json": {
+      cid: "558e1e02069137c796ace1e50c48d8fe451f04a295929138e6bea885517f0edb",
+      contentType: "application/json"
+    },
+    "generation_config.json": {
+      cid: "f9b3f711b57be7def2e50a8942f64f36ee0a55fad5b84ff93a687b6c5bcc1d44",
+      contentType: "application/json"
+    },
+    "preprocessor_config.json": {
+      cid: "fa43a7017ef85cd1d0fba0d9aae77c8adb16990ae6f11115631f41ec5d8aa679",
+      contentType: "application/json"
+    },
+    "special_tokens_map.json": {
+      cid: "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      contentType: "application/json"
+    },
+    "tokenizer_config.json": {
+      cid: "edaee394565d428ea98a663ae7209cdcfeefc5585c42d7a570ff7c986df2cd15",
+      contentType: "application/json"
+    },
+    "tokenizer.json": {
+      manifestCid: "2c41c012ce9b189a99536585666ab95ff0cf4c6ade1e46a9befd35aa45488db5",
+      manifestBlobCid: "8e173ddac450578b654efca9800925ef4437f9117c8cd1005f3c8fce701cf61b",
+      totalSha256: "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f",
+      totalBytes: 3761754,
+      contentType: "application/json"
+    },
+    "onnx/encoder_model_quantized.onnx": {
+      manifestCid: "c2d87cfc654a88468e441f65266a19a332aa400ede3a7ea87c4e8fb98b98669d",
+      manifestBlobCid: "236dcceadfb1db189d6523583503ab85b9fc86a86d6c0abfa16080a2f766d983",
+      totalSha256: "c6fc4b7bc5af75c0591fd157a1f3829b533d18e9769a888fd95a62e470dd4f4a",
+      totalBytes: 7937661,
+      contentType: "application/octet-stream"
+    },
+    "onnx/decoder_model_merged_quantized.onnx": {
+      manifestCid: "61728114e3a414037701cbb3585e45d3b3036c1e4b6f2c936df492e4de03752e",
+      manifestBlobCid: "3d707dd9481337cf2f3d191c8deb620d4d78f4ffd3e11668844368888b34f45b",
+      totalSha256: "eed87831c3a6103534aae7d47a5d485025c659a1323901513961c39fe8a1a367",
+      totalBytes: 20243286,
+      contentType: "application/octet-stream"
+    }
+  }
+};
+
+let ortWasmBinaryPromise = null;
+
+function sttArtifactMirrors() {
+  const raw = [];
+  if (window.location && /^https?:$/i.test(window.location.protocol)) {
+    raw.push(window.location.origin);
+  }
+  raw.push("https://ns1.bitecho.org", "https://ns2.bitecho.org", "https://ns3.bitecho.org");
+  return [...new Set(raw.map((m) => String(m).replace(/\/+$/, "")))];
+}
+
+function sttCacheKeyUrl(key) {
+  const origin = (window.location && /^https?:$/i.test(window.location.protocol))
+    ? window.location.origin
+    : "https://bitecho.org";
+  return `${origin}/__bitecho_stt_cache__/${encodeURIComponent(key)}`;
+}
+
+async function openSttCacheSafe() {
+  if (typeof caches === "undefined") return null;
+  try {
+    return await caches.open(STT_CACHE_NAME);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchSingleBlobVerified(cid, mirrors) {
+  let lastErr = "single-blob-fetch-failed";
+  for (const m of mirrors) {
+    try {
+      const url = `${m}/artifact/v1/blob/${cid}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const u8 = new Uint8Array(await res.arrayBuffer());
+        const actual = await sha256Hex(u8);
+        if (actual === cid) return u8;
+        lastErr = `cid-mismatch:${actual.slice(0, 12)}`;
+      } else {
+        lastErr = `http-${res.status}`;
+      }
+    } catch (e) {
+      lastErr = (e && e.message) || String(e);
+    }
+  }
+  const api = window.BitechoLightNode;
+  if (api && typeof api.getArtifact === "function") {
+    const res = await api.getArtifact({ cid });
+    if (res && res.ok && res.bytes) {
+      const u8 = res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
+      if ((await sha256Hex(u8)) === cid) return u8;
+    }
+  }
+  throw new Error(`Failed to fetch verified blob ${cid.slice(0, 12)}: ${lastErr}`);
+}
+
+async function fetchChunkedAssetBytes(entry, label, mirrors) {
+  const cache = await openSttCacheSafe();
+  const cacheUrl = sttCacheKeyUrl(`chunked:${entry.manifestCid}`);
+  if (cache) {
+    try {
+      const hit = await cache.match(cacheUrl);
+      if (hit && hit.ok) {
+        return new Uint8Array(await hit.arrayBuffer());
+      }
+    } catch (_) {}
+  }
+  const api = window.BitechoLightNode;
+  if (!api || typeof api.getChunkedArtifact !== "function") {
+    throw new Error("BitechoLightNode.getChunkedArtifact v1.1.0 unavailable");
+  }
+  const mb = entry.totalBytes ? ` (${(entry.totalBytes / 1048576).toFixed(1)} MiB)` : "";
+  if ($("stt-status")) {
+    $("stt-status").textContent = `Fetching ${label}${mb} via BIP-017a...`;
+  }
+  const manifest = await fetchManifestJson(entry.manifestBlobCid, mirrors);
+  const res = await api.getChunkedArtifact(entry.manifestCid, {
+    manifest,
+    mirrors,
+    concurrency: 3
+  });
+  if (!res || !res.ok || !res.bytes) {
+    throw new Error((res && res.error) || `chunked-fetch-failed:${label}`);
+  }
+  const bytes = res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
+  if (cache) {
+    try {
+      await cache.put(cacheUrl, new Response(bytes, {
+        status: 200,
+        headers: { "Content-Type": entry.contentType || "application/octet-stream" }
+      }));
+    } catch (_) {}
+  }
+  return bytes;
+}
+
+function lookupSelfHostedSttEntry(reqUrl) {
+  const urlStr = typeof reqUrl === "string" ? reqUrl : (reqUrl && reqUrl.url ? reqUrl.url : "");
+  if (!urlStr) return null;
+  for (const modelId of Object.keys(SELF_HOSTED_STT_ASSETS)) {
+    if (modelId === "ortWasmManifest") continue;
+    const files = SELF_HOSTED_STT_ASSETS[modelId];
+    const localPrefix = `/models/${modelId}/`;
+    const localIdx = urlStr.indexOf(localPrefix);
+    let relpath = null;
+    if (localIdx !== -1) {
+      relpath = urlStr.slice(localIdx + localPrefix.length).split("?")[0];
+    } else {
+      const resolveMarker = `/${modelId}/resolve/main/`;
+      const rIdx = urlStr.indexOf(resolveMarker);
+      if (rIdx !== -1) {
+        relpath = urlStr.slice(rIdx + resolveMarker.length).split("?")[0];
+      }
+    }
+    if (relpath && Object.prototype.hasOwnProperty.call(files, relpath)) {
+      return { modelId, relpath, entry: files[relpath] };
+    }
+  }
+  return null;
+}
+
+async function resolveSelfHostedSttAsset(reqUrl) {
+  const hit = lookupSelfHostedSttEntry(reqUrl);
+  if (!hit) return undefined;
+  const { relpath, entry } = hit;
+  const contentType = entry.contentType || "application/octet-stream";
+  const cache = await openSttCacheSafe();
+  const cacheId = entry.manifestCid ? `chunked:${entry.manifestCid}` : `blob:${entry.cid}`;
+  const cacheUrl = sttCacheKeyUrl(cacheId);
+  if (cache) {
+    try {
+      const cachedResp = await cache.match(cacheUrl);
+      if (cachedResp && cachedResp.ok) {
+        return cachedResp;
+      }
+    } catch (_) {}
+  }
+  const mirrors = sttArtifactMirrors();
+  let bytes;
+  if (entry.manifestCid) {
+    bytes = await fetchChunkedAssetBytes(entry, relpath, mirrors);
+  } else {
+    if ($("stt-status")) {
+      $("stt-status").textContent = `Fetching ${relpath}...`;
+    }
+    bytes = await fetchSingleBlobVerified(entry.cid, mirrors);
+    if (cache) {
+      try {
+        await cache.put(cacheUrl, new Response(bytes, {
+          status: 200,
+          headers: { "Content-Type": contentType }
+        }));
+      } catch (_) {}
+    }
+  }
+  return new Response(bytes, {
+    status: 200,
+    headers: { "Content-Type": contentType }
+  });
+}
+
+async function ensureOrtWasmBinary() {
+  if (!ortWasmBinaryPromise) {
+    ortWasmBinaryPromise = fetchChunkedAssetBytes(
+      SELF_HOSTED_STT_ASSETS.ortWasmManifest,
+      "ORT WASM",
+      sttArtifactMirrors()
+    ).catch((err) => {
+      ortWasmBinaryPromise = null;
+      throw err;
+    });
+  }
+  return ortWasmBinaryPromise;
+}
 
 function downsampleTo16k(float32Buf, inputRate) {
   if (inputRate === 16000) return float32Buf;
@@ -281,21 +512,36 @@ async function getSttPipeline(engineKey) {
   const modelId = engineKey === "moonshine-tiny"
     ? "onnx-community/moonshine-tiny-ONNX"
     : "Xenova/whisper-tiny.en";
-  $("stt-status").textContent = `Loading ${engineKey} locally (self-hosted)...`;
+  $("stt-status").textContent = `Loading ${engineKey} locally (self-hosted BIP-017a)...`;
   const { pipeline, env } = await import(INFERENCE_CONFIG.transformersModuleUrl);
   env.allowLocalModels = true;
   env.allowRemoteModels = false;
+  env.useBrowserCache = false;
+  env.useCustomCache = true;
+  env.customCache = {
+    async match(reqUrl) {
+      return resolveSelfHostedSttAsset(reqUrl);
+    },
+    async put(_reqUrl, _resp) {
+      return undefined;
+    }
+  };
+  const wasmBytes = await ensureOrtWasmBinary();
   if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
     env.backends.onnx.wasm.wasmPaths = INFERENCE_CONFIG.ortWasmPaths;
+    env.backends.onnx.wasm.wasmBinary = wasmBytes;
   }
   if (env.wasm) {
     env.wasm.wasmPaths = INFERENCE_CONFIG.ortWasmPaths;
+    env.wasm.wasmBinary = wasmBytes;
   }
+  $("stt-status").textContent = `Initializing ${engineKey} ONNX sessions...`;
   const pipe = await pipeline("automatic-speech-recognition", modelId, {
     dtype: "q8",
     device: "wasm"
   });
   sttPipelines[engineKey] = pipe;
+  $("stt-status").textContent = `${engineKey} ready (100% self-hosted)`;
   return pipe;
 }
 
@@ -539,7 +785,9 @@ function renderLists(subnets, sessions, petnames) {
     const label = s.peerPetname || s.peer_petname || (s.sessionId || s.session_id || "").slice(0, 12);
     const sid = s.sessionId || s.session_id;
     const col = s.color || colorForKey(label);
-    return `<div class="list-item ${activeTarget.kind === "dm" && activeTarget.id === sid ? "active" : ""}" data-kind="dm" data-id="${sid}"><span><span class="dot" style="background:${col}"></span>${label}</span></div>`;
+    const stateStr = String(s.state || s.status || "open").toLowerCase();
+    const pillCls = stateStr === "open" ? "ok" : (stateStr === "offered" ? "warn" : "");
+    return `<div class="list-item ${activeTarget.kind === "dm" && activeTarget.id === sid ? "active" : ""}" data-kind="dm" data-id="${sid}"><span><span class="dot" style="background:${col}"></span>${label}</span><span class="pill ${pillCls}" style="font-size:0.65rem;padding:1px 6px;">${stateStr}</span></div>`;
   }).join("") || `<div style="font-size:0.78rem;color:var(--muted);">No active DM sessions yet</div>`;
 
   $("petname-list").innerHTML = petnames.map(p => {
@@ -694,6 +942,11 @@ async function connectNode() {
     if (unsub) unsub();
     if (node.onEvent) {
       unsub = node.onEvent((ev) => {
+        if (ev.type === "offer-received" || ev.type === "session-updated") {
+          refreshSidebar();
+          renderPendingOffers();
+          return;
+        }
         if (ev.type === "message-received" || ev.type === "broadcast-received") {
           const dk = messageDedupeKey(ev);
           if (seenMessageKeys.has(dk)) return;
@@ -966,11 +1219,26 @@ async function renderPendingOffers() {
     box.innerHTML = "";
     return;
   }
+  let finalizedEpoch = null;
+  try {
+    const st = (api && typeof api.getStatus === "function")
+      ? await api.getStatus()
+      : (browser && typeof browser.getStatus === "function" ? browser.getStatus() : null);
+    if (st) {
+      const fe = st.finalizedEpoch ?? st.finalized_epoch ?? st.epoch;
+      if (typeof fe === "number" && Number.isFinite(fe)) finalizedEpoch = fe;
+    }
+  } catch (_) {}
   box.innerHTML = all.map((off, idx) => {
     const caller = off.callerPetname || off.caller || off["caller-pubkey"] || "peer";
     const label = String(caller).length > 16 ? `${String(caller).slice(0, 12)}…` : caller;
+    const offerEpoch = Number(off.epoch ?? off.offerEpoch ?? off["offer-epoch"]);
+    const isStale = finalizedEpoch !== null && Number.isFinite(offerEpoch) && (finalizedEpoch - offerEpoch > 15);
+    const staleBadge = isStale
+      ? ` <span class="pill warn" style="font-size:0.65rem;padding:1px 5px;">⚠ stale</span>`
+      : "";
     return `<div class="list-item" style="background:rgba(245,158,11,0.12);border-color:rgba(245,158,11,0.4);cursor:default;">
-      <span style="font-size:0.76rem;">Offer from <strong>${label}</strong></span>
+      <span style="font-size:0.76rem;">Offer from <strong>${label}</strong>${staleBadge}</span>
       <button class="btn-accept-offer primary" data-idx="${idx}" style="padding:2px 7px;font-size:0.72rem;">✅ Accept</button>
     </div>`;
   }).join("");
@@ -1105,3 +1373,9 @@ if (globalThis.BitechoBrowser) {
   }
 }
 renderLists(["bitecho.org/dev", "bitecho.org/team", "bitecho.org/infra"], [], []);
+setInterval(() => {
+  if (node) {
+    refreshSidebar();
+    renderPendingOffers();
+  }
+}, 5000);

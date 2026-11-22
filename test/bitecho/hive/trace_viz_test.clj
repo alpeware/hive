@@ -122,7 +122,12 @@
           (is (str/includes? chat-js "listPendingOffers"))
           (is (str/includes? chat-js "registerYubiKey"))
           (is (str/includes? chat-js "recoverYubiKey"))
-          (is (str/includes? chat-js "saveIdentity")))
+          (is (str/includes? chat-js "saveIdentity"))
+          (is (str/includes? chat-js "SELF_HOSTED_STT_ASSETS"))
+          (is (str/includes? chat-js "useCustomCache"))
+          (is (str/includes? chat-js "wasmBinary"))
+          (is (str/includes? chat-js "offer-received"))
+          (is (str/includes? chat-js "session-updated")))
 
         (testing "release-assets.edn records exact SHA-256 CID, byte size, media-type, and SHA-384 SRI"
           (is (= :bitecho/hive-web-app-assets-v1 (:schema assets-edn)))
