@@ -377,10 +377,195 @@ const INFERENCE_CONFIG = Object.assign({
 
 let node = null;
 let unsub = null;
+let unsubState = null;
 let activeTarget = { kind: "subnet", id: "bitecho.org/dev" };
 let messageLog = [];
 const seenMessageKeys = new Set();
 let petnamesByPk = {};
+
+// BIP-020 Stage 3: Honest Mesh Badge, Pillar 1-4 Delivery Telemetry & Outbound Status
+const MAX_DIAGNOSE_RING_ENTRIES = 64;
+const deliveryDiagnosticsState = {
+  lastStatus: null,
+  diagnose: []
+};
+
+function escapeHtml(raw) {
+  return String(raw ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function classifyMeshBadge({ meshConnected, degraded, relayFallbackActive }) {
+  const connected = Boolean(meshConnected);
+  const deg = Boolean(degraded);
+  const relayFb = Boolean(relayFallbackActive);
+  if (connected && !deg) {
+    return { state: "live", label: "LIVE", cssClass: "pill ok" };
+  }
+  if (deg || (!connected && relayFb)) {
+    return { state: "degraded", label: "DEGRADED (relay)", cssClass: "pill warn" };
+  }
+  return { state: "disconnected", label: "DISCONNECTED", cssClass: "pill live" };
+}
+
+function classifyOutboundDeliveryStatus(res) {
+  if (res && Boolean(res.evicted)) return "evicted";
+  const errStr = res && res.error != null ? String(res.error).trim() : "";
+  if (!res || res.ok !== true || errStr.length > 0) return "rejected";
+  if (Boolean(res.queued)) return "queued";
+  return "sent";
+}
+
+function toNonNegInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+function normalizeCounterMap(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    out[k] = toNonNegInt(v);
+  }
+  return out;
+}
+
+function summarizeDeliveryTelemetry(rawStatus, ringEvents) {
+  const st = (rawStatus && typeof rawStatus === "object") ? rawStatus : {};
+  const tel = (st.deliveryTelemetry || st.delivery_telemetry || st.telemetry || st.delivery || {});
+  const diag = (st.diagnostics || st.diagnose || {});
+  const pick = (...vals) => vals.find((v) => v !== undefined && v !== null);
+
+  const sent = toNonNegInt(pick(tel.sent, st.sent, diag.sent));
+  const acked = toNonNegInt(pick(tel.acked, st.acked, diag.acked));
+  const evictedRaw = pick(
+    tel.evicted_by_reason, tel.evictedByReason, tel["evicted-by-reason"],
+    st.evicted_by_reason, st.evictedByReason, st["evicted-by-reason"],
+    diag.evicted_by_reason, diag.evictedByReason
+  );
+  const evicted_by_reason = normalizeCounterMap(evictedRaw);
+  const unacked_aged = toNonNegInt(pick(
+    tel.unacked_aged, tel.unackedAged, tel["unacked-aged"],
+    st.unacked_aged, st.unackedAged, diag.unacked_aged
+  ));
+  const mesh_submitted = toNonNegInt(pick(
+    tel.mesh_submitted, tel.meshSubmitted, tel["mesh-submitted"],
+    st.mesh_submitted, st.meshSubmitted, diag.mesh_submitted
+  ));
+  const p2p_direct = toNonNegInt(pick(
+    tel.p2p_direct, tel.p2pDirect, tel["p2p-direct"],
+    st.p2p_direct, st.p2pDirect, diag.p2p_direct
+  ));
+  const rneRaw = pick(
+    tel.received_but_not_emitted, tel.receivedButNotEmitted, tel["received-but-not-emitted"],
+    st.received_but_not_emitted, st.receivedButNotEmitted, diag.received_but_not_emitted
+  );
+  const received_but_not_emitted = (rneRaw && typeof rneRaw === "object" && !Array.isArray(rneRaw))
+    ? normalizeCounterMap(rneRaw)
+    : toNonNegInt(rneRaw);
+
+  const meshConnected = Boolean(pick(st.meshConnected, st.mesh_connected, st["mesh-connected?"]));
+  const relayFallbackActive = Boolean(pick(st.relayFallbackActive, st.relay_fallback_active, st["relay-fallback-active?"]));
+  const degraded = Boolean(pick(st.degraded, st["degraded?"]));
+
+  const statusDiag = pick(st.diagnoseEvents, st.diagnose_events, st["diagnose-events"], diag.events);
+  const combinedDiag = [];
+  if (Array.isArray(statusDiag)) combinedDiag.push(...statusDiag);
+  if (Array.isArray(ringEvents)) combinedDiag.push(...ringEvents);
+  const boundedDiag = combinedDiag.slice(-MAX_DIAGNOSE_RING_ENTRIES);
+
+  return {
+    sent,
+    acked,
+    evicted_by_reason,
+    unacked_aged,
+    mesh_submitted,
+    p2p_direct,
+    received_but_not_emitted,
+    meshConnected,
+    relayFallbackActive,
+    degraded,
+    diagnose: boundedDiag
+  };
+}
+
+function recordDiagnoseEvent(ev) {
+  if (!ev) return;
+  const entry = Object.assign({ ts: Date.now() }, typeof ev === "object" ? ev : { message: String(ev) });
+  deliveryDiagnosticsState.diagnose.push(entry);
+  if (deliveryDiagnosticsState.diagnose.length > MAX_DIAGNOSE_RING_ENTRIES) {
+    deliveryDiagnosticsState.diagnose = deliveryDiagnosticsState.diagnose.slice(-MAX_DIAGNOSE_RING_ENTRIES);
+  }
+}
+
+function renderDeliveryDiagnosticsDrawer(stArg) {
+  if (stArg && typeof stArg === "object") {
+    deliveryDiagnosticsState.lastStatus = stArg;
+  }
+  const summary = summarizeDeliveryTelemetry(
+    deliveryDiagnosticsState.lastStatus,
+    deliveryDiagnosticsState.diagnose
+  );
+  const btn = $("delivery-diag-btn");
+  if (btn) {
+    const diagCount = summary.diagnose.length;
+    btn.textContent = diagCount > 0 ? `Diagnostics (${diagCount})` : "Diagnostics";
+    const badge = classifyMeshBadge(summary);
+    btn.className = badge.state === "live"
+      ? "relay-pill ok"
+      : (badge.state === "degraded" ? "relay-pill warn" : "relay-pill live");
+  }
+  const drawer = $("delivery-diag-drawer");
+  if (!drawer || !drawer.classList.contains("open")) return;
+
+  const badge = classifyMeshBadge(summary);
+  const evictedEntries = Object.entries(summary.evicted_by_reason);
+  const evictedStr = evictedEntries.length
+    ? evictedEntries.map(([k, v]) => `${k}:${v}`).join(", ")
+    : "0";
+  const rneStr = (typeof summary.received_but_not_emitted === "object")
+    ? (Object.entries(summary.received_but_not_emitted).map(([k, v]) => `${k}:${v}`).join(", ") || "0")
+    : String(summary.received_but_not_emitted);
+
+  const ringLines = summary.diagnose.length
+    ? summary.diagnose.slice().reverse().map((ev) => {
+      const ts = ev.ts ? new Date(ev.ts).toISOString().slice(11, 19) : "--:--:--";
+      const reason = ev.reason || ev.type || ev.kind || "diagnose";
+      const detail = ev.error || ev.message || ev.detail || "";
+      return `<div>[${escapeHtml(ts)}] <strong>${escapeHtml(reason)}</strong>${detail ? ` — ${escapeHtml(detail)}` : ""}</div>`;
+    }).join("")
+    : `<div>No :diagnose events recorded yet (ring buffer cap: ${MAX_DIAGNOSE_RING_ENTRIES})</div>`;
+
+  drawer.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+      <strong>BIP-020 Delivery Diagnostics (Pillar 1–4)</strong>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <span class="${badge.cssClass}">${escapeHtml(badge.label)}</span>
+        <span style="color:var(--muted);">meshConnected: <strong>${summary.meshConnected}</strong> · relayFallbackActive: <strong>${summary.relayFallbackActive}</strong></span>
+      </span>
+    </div>
+    <div class="diag-grid">
+      <div class="diag-card"><div class="diag-card-label">sent</div><div class="diag-card-val">${summary.sent}</div></div>
+      <div class="diag-card"><div class="diag-card-label">acked</div><div class="diag-card-val">${summary.acked}</div></div>
+      <div class="diag-card"><div class="diag-card-label">evicted_by_reason</div><div class="diag-card-val" style="font-size:0.78rem;">${escapeHtml(evictedStr)}</div></div>
+      <div class="diag-card"><div class="diag-card-label">unacked_aged</div><div class="diag-card-val">${summary.unacked_aged}</div></div>
+      <div class="diag-card"><div class="diag-card-label">mesh_submitted</div><div class="diag-card-val">${summary.mesh_submitted}</div></div>
+      <div class="diag-card"><div class="diag-card-label">p2p_direct</div><div class="diag-card-val">${summary.p2p_direct}</div></div>
+      <div class="diag-card"><div class="diag-card-label">received_but_not_emitted</div><div class="diag-card-val" style="font-size:0.78rem;">${escapeHtml(rneStr)}</div></div>
+    </div>
+    <div class="diag-ring">${ringLines}</div>
+  `;
+}
+
+window.__HIVE_DELIVERY_DIAGNOSTICS__ = {
+  classifyMeshBadge,
+  classifyOutboundDeliveryStatus,
+  summarizeDeliveryTelemetry,
+  getSummary: () => summarizeDeliveryTelemetry(deliveryDiagnosticsState.lastStatus, deliveryDiagnosticsState.diagnose)
+};
 
 function messageDedupeKey(ev) {
   if (ev.msgId || ev.msg_id) return `id:${ev.msgId || ev.msg_id}`;
@@ -1365,9 +1550,19 @@ function renderMessages() {
     const div = document.createElement("div");
     div.className = "msg";
     div.style.borderLeftColor = col;
+    let deliveryHtml = "";
+    if (m.deliveryStatus) {
+      const ds = String(m.deliveryStatus).toLowerCase();
+      const pillTone = ds === "sent" ? "ok" : (ds === "queued" ? "warn" : "live");
+      const errTitle = m.deliveryError ? ` title="${escapeHtml(m.deliveryError)}"` : "";
+      const errSuffix = (ds === "rejected" || ds === "evicted") && m.deliveryError
+        ? ` (${escapeHtml(m.deliveryError)})`
+        : "";
+      deliveryHtml = `<span class="pill ${pillTone} delivery-pill" data-delivery-status="${escapeHtml(ds)}"${errTitle}>${escapeHtml(ds)}${errSuffix}</span>`;
+    }
     div.innerHTML = `
       <div class="msg-head">
-        <span><strong style="color:${col}">${name}</strong> · <code>${voice}</code> · seq ${m.seq ?? "-"}</span>
+        <span><strong style="color:${col}">${escapeHtml(name)}</strong> · <code>${escapeHtml(voice)}</code> · seq ${m.seq ?? "-"}${deliveryHtml}</span>
         <button class="btn-speak-one" style="padding:2px 8px;font-size:0.74rem;">🔊 Speak</button>
       </div>
       <div class="msg-body"></div>
@@ -1423,18 +1618,57 @@ async function refreshNodeBadge(stArg) {
   if (!st && browser && browser.getStatus) {
     try { st = browser.getStatus(); } catch (_) {}
   }
-  if (!st) return;
+  if (!st) {
+    const badge = classifyMeshBadge({ meshConnected: false, degraded: false, relayFallbackActive: false });
+    $("api-badge").textContent = `BitechoLightNode v${(api && api.apiVersion) || "1.1.0"} ${badge.label}`;
+    $("api-badge").className = badge.cssClass;
+    renderDeliveryDiagnosticsDrawer(null);
+    return;
+  }
   const pk = st.pubkey || st.peerId || "";
   const bal = st.balance ?? 0;
   if (pk) {
     $("node-id-badge").style.display = "inline-block";
     $("node-id-badge").textContent = `pubkey: ${pk.slice(0, 12)}… · bal: ${Number(bal).toLocaleString()} ECH`;
   }
-  if (st.meshConnected) {
-    $("api-badge").textContent = `BitechoLightNode v${(api && api.apiVersion) || "1.1.0"} CONNECTED (${(api && api.version) || "0.23.19"})`;
-    $("api-badge").className = "pill ok";
-  }
+  const meshConnected = Boolean(st.meshConnected ?? st.mesh_connected ?? st["mesh-connected?"]);
+  const degraded = Boolean(st.degraded ?? st["degraded?"]);
+  const relayFallbackActive = Boolean(st.relayFallbackActive ?? st.relay_fallback_active ?? st["relay-fallback-active?"]);
+  const badge = classifyMeshBadge({ meshConnected, degraded, relayFallbackActive });
+  const ver = (api && api.version) || "0.23.19";
+  const apiVer = (api && api.apiVersion) || "1.1.0";
+  $("api-badge").textContent = `BitechoLightNode v${apiVer} ${badge.label} (${ver})`;
+  $("api-badge").className = badge.cssClass;
   updateRelayHealthPill(st);
+  renderDeliveryDiagnosticsDrawer(st);
+}
+
+function applyDeliveryOutcomeEvent(ev) {
+  if (!ev) return;
+  const targetMsgId = ev.msgId || ev.msg_id || null;
+  const targetSeq = ev.seq ?? null;
+  const nextStatus = classifyOutboundDeliveryStatus(ev);
+  const nextErr = ev.error || ev.reason || null;
+  let updated = false;
+  for (let i = messageLog.length - 1; i >= 0; i--) {
+    const m = messageLog[i];
+    const idMatch = targetMsgId && m.msgId && m.msgId === targetMsgId;
+    const seqMatch = !targetMsgId && targetSeq !== null && m.from === "me" && m.seq === targetSeq;
+    if (idMatch || seqMatch) {
+      m.deliveryStatus = nextStatus;
+      if (nextErr) m.deliveryError = String(nextErr);
+      if (ev.fanout) m.fanout = ev.fanout;
+      updated = true;
+      break;
+    }
+  }
+  if (updated) {
+    renderMessages();
+  }
+  if (nextStatus === "rejected" || nextStatus === "evicted") {
+    $("tts-status").textContent = `Delivery ${nextStatus}: ${nextErr || "mesh-delivery-failed"}`;
+  }
+  renderDeliveryDiagnosticsDrawer();
 }
 
 async function connectNode() {
@@ -1447,17 +1681,27 @@ async function connectNode() {
     return;
   }
   $("api-badge").textContent = `BitechoLightNode v${api.apiVersion || "1.1.0"} connecting...`;
+  $("api-badge").className = "pill warn";
   try {
     node = api;
+    const initOpts = {
+      subnetId: "bitecho.org/dev",
+      relayUrls: [
+        "https://ns1.bitecho.org",
+        "https://ns2.bitecho.org",
+        "https://ns3.bitecho.org"
+      ]
+    };
     // IMPORTANT: Never call initNode() if already booted / restored from IndexedDB or YubiKey,
     // because initNode() generates a fresh ephemeral keypair and clobbers the Anchor Identity!
     const existing = api.getStatus ? await api.getStatus() : ((browser && browser.getStatus) ? browser.getStatus() : null);
     if (!existing || !existing.pubkey) {
-      if (api.initNode) await api.initNode({ subnetId: "bitecho.org/dev" });
-      else if (browser && browser.initNode) browser.initNode({ subnetId: "bitecho.org/dev" });
+      if (typeof api.init === "function") await api.init(initOpts);
+      else if (api.initNode) await api.initNode(initOpts);
+      else if (browser && browser.initNode) browser.initNode(initOpts);
     }
     if (api.reconnect) {
-      await api.reconnect({ subnetId: "bitecho.org/dev" });
+      await api.reconnect(initOpts);
     } else if (browser && browser.connectMesh) {
       browser.connectMesh();
     }
@@ -1465,11 +1709,33 @@ async function connectNode() {
       try { await api.exec("sync-account", {}); } catch (_) {}
     }
     await refreshNodeBadge();
-    $("api-badge").textContent = `BitechoLightNode v${api.apiVersion || "1.1.0"} LIVE (${api.version || "0.23.19"})`;
-    $("api-badge").className = "pill ok";
+    if (unsubState) {
+      try { unsubState(); } catch (_) {}
+      unsubState = null;
+    }
+    if (typeof node.onStateChange === "function") {
+      const maybeUnsub = node.onStateChange((st) => {
+        refreshNodeBadge(st);
+      });
+      if (typeof maybeUnsub === "function") unsubState = maybeUnsub;
+    }
     if (unsub) unsub();
     if (node.onEvent) {
       unsub = node.onEvent((ev) => {
+        if (!ev) return;
+        if (ev.type === "diagnose") {
+          recordDiagnoseEvent(ev);
+          renderDeliveryDiagnosticsDrawer();
+          return;
+        }
+        if (ev.type === "status" || ev.type === "mesh-state") {
+          refreshNodeBadge(ev.status || ev);
+          return;
+        }
+        if (ev.type === "delivery-outcome") {
+          applyDeliveryOutcomeEvent(ev);
+          return;
+        }
         if (ev.type === "offer-received" || ev.type === "session-updated") {
           refreshSidebar();
           renderPendingOffers();
@@ -1495,8 +1761,10 @@ async function connectNode() {
     refreshAnchorUI();
     $("channel-header").textContent = `Subnet Broadcast: #${activeTarget.id}`;
   } catch (e) {
+    recordDiagnoseEvent({ reason: "connect-error", error: e.message || String(e) });
     $("api-badge").textContent = `Connect error: ${e.message}`;
-    $("api-badge").className = "pill warn";
+    $("api-badge").className = "pill live";
+    renderDeliveryDiagnosticsDrawer();
   }
 }
 
@@ -1508,31 +1776,44 @@ async function sendCurrentMessage() {
     return;
   }
   $("msg-input").value = "";
-  const res = activeTarget.kind === "subnet"
-    ? await node.sendBroadcast(activeTarget.id, txt)
-    : await node.sendMessage(activeTarget.id, txt);
-  if (res && res.ok) {
-    const ownEv = {
-      type: activeTarget.kind === "subnet" ? "broadcast-received" : "message-received",
-      subnetId: activeTarget.kind === "subnet" ? activeTarget.id : null,
-      sessionId: activeTarget.kind === "dm" ? activeTarget.id : null,
-      from: "me",
-      fromPetname: "You",
-      color: "#34d399",
-      seq: res.seq,
-      msgId: res.msgId || res.msg_id || null,
-      text: txt
-    };
-    const dk = messageDedupeKey(ownEv);
-    if (!seenMessageKeys.has(dk)) {
-      seenMessageKeys.add(dk);
-      messageLog.push(ownEv);
-      renderMessages();
-    }
-  } else {
-    const err = (res && res.error) || "send-failed";
-    $("tts-status").textContent = `Send rejected: ${err}`;
+  let res;
+  try {
+    res = activeTarget.kind === "subnet"
+      ? await node.sendBroadcast(activeTarget.id, txt)
+      : await node.sendMessage(activeTarget.id, txt);
+  } catch (e) {
+    res = { ok: false, error: (e && e.message) || String(e) };
   }
+  const deliveryStatus = classifyOutboundDeliveryStatus(res);
+  const deliveryError = (res && res.error) ? String(res.error) : (deliveryStatus === "rejected" ? "send-failed" : null);
+  const ownEv = {
+    type: activeTarget.kind === "subnet" ? "broadcast-received" : "message-received",
+    subnetId: activeTarget.kind === "subnet" ? activeTarget.id : null,
+    sessionId: activeTarget.kind === "dm" ? activeTarget.id : null,
+    from: "me",
+    fromPetname: "You",
+    color: deliveryStatus === "sent" ? "#34d399" : (deliveryStatus === "queued" ? "#f59e0b" : "#fb7185"),
+    seq: res && res.seq,
+    msgId: (res && (res.msgId || res.msg_id)) || `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    text: txt,
+    deliveryStatus,
+    deliveryError,
+    fanout: res && res.fanout ? res.fanout : null
+  };
+  const dk = messageDedupeKey(ownEv);
+  if (!seenMessageKeys.has(dk)) {
+    seenMessageKeys.add(dk);
+    messageLog.push(ownEv);
+    renderMessages();
+  }
+  if (!res || res.ok === false || deliveryStatus === "rejected" || deliveryStatus === "evicted") {
+    const err = deliveryError || "send-failed";
+    recordDiagnoseEvent({ reason: `send-${deliveryStatus}`, error: err });
+    $("tts-status").textContent = `Send ${deliveryStatus}: ${err}`;
+  } else if (deliveryStatus === "queued") {
+    $("tts-status").textContent = "Message queued (awaiting mesh/peer ack)";
+  }
+  await refreshNodeBadge();
 }
 
 // ---------------------------------------------------------------------------
@@ -1871,12 +2152,21 @@ $("btn-rolodex-verify").addEventListener("click", async () => {
 
 if (window.BitechoLightNode) {
   node = window.BitechoLightNode;
-  $("api-badge").textContent = `BitechoLightNode v${window.BitechoLightNode.apiVersion || "1.1.0"} ready (${window.BitechoLightNode.version || "0.23.19"}, SRI verified)`;
-  $("api-badge").className = "pill ok";
+  $("api-badge").textContent = `BitechoLightNode v${window.BitechoLightNode.apiVersion || "1.1.0"} DISCONNECTED (${window.BitechoLightNode.version || "0.23.19"})`;
+  $("api-badge").className = "pill live";
 }
 if (globalThis.BitechoBrowser) {
   const b = globalThis.BitechoBrowser;
-  if (b.initNode) b.initNode({ subnetId: "bitecho.org/dev" });
+  if (b.initNode) {
+    b.initNode({
+      subnetId: "bitecho.org/dev",
+      relayUrls: [
+        "https://ns1.bitecho.org",
+        "https://ns2.bitecho.org",
+        "https://ns3.bitecho.org"
+      ]
+    });
+  }
   const initialDash = b.initAnchor ? b.initAnchor() : null;
   refreshAnchorUI(initialDash);
   refreshNodeBadge();
@@ -1899,6 +2189,17 @@ if (globalThis.BitechoBrowser) {
       renderPendingOffers();
     });
   }
+}
+if ($("delivery-diag-btn") && $("delivery-diag-drawer")) {
+  $("delivery-diag-btn").addEventListener("click", () => {
+    const drawer = $("delivery-diag-drawer");
+    const isOpen = drawer.classList.toggle("open");
+    $("delivery-diag-btn").setAttribute("aria-expanded", isOpen ? "true" : "false");
+    renderDeliveryDiagnosticsDrawer();
+    if (isOpen) {
+      refreshNodeBadge().catch(() => {});
+    }
+  });
 }
 if ($("relay-health-pill") && $("relay-health-popover")) {
   $("relay-health-pill").addEventListener("click", (e) => {
