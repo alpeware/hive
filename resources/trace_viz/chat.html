@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Bitecho Hive — Live Chat UI (BitechoLightNode v1.1.0 + Per-Petname TTS + Local VAD/STT)</title>
 <script src="/api/bitecho-browser.js"
-        integrity="sha384-xz3vl27CBqKMBOVMkuIM62Gq93H7zMhor9oXUMoi6PRWrUHQXDEE0rIE8zxF5/sL"
+        integrity="sha384-nt4zVeOge26DMg85z3APzo8ZYexBOJ0UDETHTfLItPwuVAszbG5JJPDLV3+2RakB"
         crossorigin="anonymous"></script>
 <style>
   :root {
@@ -260,6 +260,11 @@
     </div>
     <div>
       <h2>Subnet Broadcasts</h2>
+      <div style="display:flex;gap:5px;margin-bottom:6px;">
+        <input id="subnet-subscribe-input" placeholder="Subnet (e.g. bitecho.org/ops)" style="flex:1;font-size:0.75rem;padding:5px 7px;" />
+        <button id="btn-subscribe-subnet" class="primary" style="font-size:0.74rem;padding:5px 8px;">+ Sub</button>
+      </div>
+      <div id="subnet-action-status" style="font-size:0.72rem;color:var(--muted);margin-bottom:6px;"></div>
       <div id="subnet-list"></div>
     </div>
     <div>

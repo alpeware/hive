@@ -31,7 +31,7 @@
 
 (def browser-bundle-sri
   "Pinned SHA-384 SRI for `bitecho-browser.js` v0.23.19 (CID ecf56ca5...)."
-  "sha384-xz3vl27CBqKMBOVMkuIM62Gq93H7zMhor9oXUMoi6PRWrUHQXDEE0rIE8zxF5/sL")
+  "sha384-nt4zVeOge26DMg85z3APzo8ZYexBOJ0UDETHTfLItPwuVAszbG5JJPDLV3+2RakB")
 
 (defn sha256-bytes
   "Pure SHA-256 hex digest of a byte array."

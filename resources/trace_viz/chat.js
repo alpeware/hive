@@ -488,8 +488,51 @@ async function toggleHandsFreeVad() {
 // BitechoLightNode v1.1.0 UI Wiring + BIP-016 Rolodex & Memento Sync
 // ---------------------------------------------------------------------------
 
+const DEFAULT_SUBNETS = [
+  "bitecho.org/dev",
+  "bitecho.org/team",
+  "bitecho.org/infra",
+  "chat/simon-nexus-axiom",
+  "devnet.bitecho.org",
+  "global"
+];
+
+function loadSavedSubnets() {
+  try {
+    const raw = localStorage.getItem("hive_subscribed_subnets");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(s => typeof s === "string" && s.trim()) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveCustomSubnet(sub) {
+  const s = String(sub || "").trim();
+  if (!s) return loadSavedSubnets();
+  const cur = loadSavedSubnets();
+  if (!cur.includes(s)) {
+    cur.push(s);
+    try { localStorage.setItem("hive_subscribed_subnets", JSON.stringify(cur)); } catch (_) {}
+  }
+  return cur;
+}
+
+function mergedSubnetsList(nodeSubnets) {
+  const seen = new Set();
+  const out = [];
+  for (const s of [...DEFAULT_SUBNETS, ...loadSavedSubnets(), ...(nodeSubnets || [])]) {
+    const clean = String(s || "").trim();
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      out.push(clean);
+    }
+  }
+  return out;
+}
+
 function renderLists(subnets, sessions, petnames) {
-  const effectiveSubnets = subnets.length ? subnets : ["bitecho.org/dev", "bitecho.org/team", "bitecho.org/infra"];
+  const effectiveSubnets = mergedSubnetsList(subnets);
   $("subnet-list").innerHTML = effectiveSubnets
     .map(s => `<div class="list-item ${activeTarget.kind === "subnet" && activeTarget.id === s ? "active" : ""}" data-kind="subnet" data-id="${s}"><span># ${s}</span></div>`).join("");
   $("session-list").innerHTML = sessions.map(s => {
@@ -988,6 +1031,38 @@ $("btn-rolodex-put").addEventListener("click", async () => {
     : `Rolodex put: ${(res && res.error) || "unavailable"}`;
   await refreshRolodexStatus();
 });
+async function subscribeSubnet(subRaw) {
+  const sub = String(subRaw || "").trim();
+  if (!sub) return;
+  saveCustomSubnet(sub);
+  const allSubs = mergedSubnetsList([]);
+  if (node && typeof node.exec === "function") {
+    try {
+      await node.exec("subscribe-subnets", { subnets: allSubs.join(",") });
+    } catch (_) {}
+  }
+  activeTarget = { kind: "subnet", id: sub };
+  $("channel-header").textContent = `Subnet Broadcast: #${sub}`;
+  if ($("subnet-subscribe-input")) $("subnet-subscribe-input").value = "";
+  if ($("subnet-action-status")) $("subnet-action-status").textContent = `Subscribed: #${sub}`;
+  await refreshSidebar();
+  renderMessages();
+}
+
+if ($("btn-subscribe-subnet")) {
+  $("btn-subscribe-subnet").addEventListener("click", () => {
+    subscribeSubnet($("subnet-subscribe-input") ? $("subnet-subscribe-input").value : "");
+  });
+}
+if ($("subnet-subscribe-input")) {
+  $("subnet-subscribe-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      subscribeSubnet($("subnet-subscribe-input").value);
+    }
+  });
+}
+
 $("btn-rolodex-verify").addEventListener("click", async () => {
   const cid = ($("rolodex-cid-input").value.trim() || "be7ec379170f0f849be325a29a3486b0ae6add6338db6a8c5f6743e5315d7bf4");
   if (!cid || !node || !node.getArtifact) return;
