@@ -1,9 +1,9 @@
 {:schema :bitecho/bip-soak-receipt-v1
  :bip-id "BIP-018"
- :run 4
+ :run 5
  :repo "alpeware/hive"
- :executed-at "2026-11-22T16:16:12Z"
- :completed-at "2026-11-22T16:31:31Z"
+ :executed-at "2026-11-22T16:37:11Z"
+ :completed-at "2026-11-22T16:52:49Z"
  :prior-runs
  [{:run 1
    :executed-at "2026-11-22T14:26:56Z"
@@ -25,6 +25,13 @@
    :receipt-cid "027e77076b4b2c484f447d41c57537aaca4fbb219656599cc45fb55dcd4e92e6"
    :bundle-sha256 "f8de64b92e47080ab34461bb3a4e57daae23563e5f1f6f04bf781bbff9aa9287"
    :overall-verdict :fail-with-actionable-findings
+   :gate-verdicts {:p-mem-1 :fail :p-fail-1 :pass}}
+  {:run 4
+   :executed-at "2026-11-22T16:16:12Z"
+   :completed-at "2026-11-22T16:31:31Z"
+   :receipt-cid "a5394d7a606ba1fdabb448cfe59af4a04e09383621763b10efb9f17501b3dfe1"
+   :bundle-sha256 "f637cc1d298e121b4963da043b14ade0506802f59e470d1017d02d5d836f19c5"
+   :overall-verdict :fail-with-actionable-findings
    :gate-verdicts {:p-mem-1 :fail :p-fail-1 :pass}}]
  :cluster {:version "0.23.21"
            :git-commit "a2ba65a"
@@ -41,21 +48,25 @@
  :gates
  {:p-mem-1
   {:verdict :fail
-   :summary "Major progress from a2ba65a (-35 to -40 MiB settled RSS vs Run 3!): 150/150 chunks uploaded via one-shot artifact-put (0 errors, max stdout line 901 B, 0 Uint8Array dumps) and 150/150 cross-relay HTTPS GET /artifact/v1/blob/<cid> fetches verified exact SHA-256 in 3.96s (0 404s, 0 peer-artifact-replicate-failed), with 150/150/150 :blob-stored-cold (0 :blob-hot-evicted, confirming >64 KiB cold-disk bypass), 0 OOMs, 0 restarts, 0 finality stalls, 11/11 /app/ seq 10 HTTP 200 COOP/COEP checks, and ALL 3 relays now cleanly UNDER the <= 200 MiB steady-state RSS ceiling (ns1 191.10 MiB, ns2 172.35 MiB, ns3 172.04 MiB; V8 heap 41.15/41.39/41.84 MiB, ~80.5-80.8% headroom). HOWEVER BIP-018-SOAK-F1 remains narrowly open on the <= 32 MiB RSS delta criterion: while follower ns2 passed (+29.75 MiB from 142.60 MiB), follower ns3 settled at +32.83 MiB (+0.83 MiB over 32 MiB from 139.21 MiB) and leader ns1 settled at +56.41 MiB (+24.41 MiB over 32 MiB from its cold-start 60s-uptime baseline of 134.69 MiB)."
-   :workload {:seed "bip-018-pmem1-soak-2026-11-22-run4"
+   :summary "FAIL (Warm-Baseline Run 5 refutes the cold-start-only hypothesis): Starting from warm ~22-23 min uptime without restarting any node, ALL 3 relays exceeded the <= 200 MiB steady-state RSS ceiling after a second 150 x 512 KiB (75.0 MiB) burst — settled post-flush (+130s) RSS reached ns1=250.50 MiB (+34.36 MiB from warm baseline 216.14 MiB), ns2=214.31 MiB (+38.21 MiB from 176.10 MiB), and ns3=204.63 MiB (+19.34 MiB from 185.29 MiB). Two of three relays (ns1 +34.36 MiB, ns2 +38.21 MiB) also exceeded the <= 32 MiB warm burst delta ceiling, while V8 heap remained flat (54.29/50.44/42.25 MiB, 74.8-80.4% headroom), isolating the accumulation to native/off-heap RSS (BIP-018-SOAK-F1). Additionally, while 150/150 one-shot artifact-put calls returned ok=true (0 upload errors, max stdout line 901 B, 0 Uint8Array dumps, 12/12 /app/ seq 10 HTTP 200 COOP/COEP checks, 0 OOMs, 0 restarts, 0 finality stalls), cross-relay HTTPS GET parity was 149/150 (1 HTTP 404: chunk-110 cid 0af8076cca998605b36faaed3af95a978939dba2445f7eab44a2216a0a0356b1, 404 on all 3 relays ns1/ns2/ns3) matching blob-stored-cold delta +149/+149/+149 (150 -> 299, 0 peer-artifact-replicate-failed delta) — a silent cold-store drop on an ok=true upload (BIP-018-SOAK-F4)."
+   :workload {:seed "bip-018-pmem1-soak-2026-11-22-run5"
               :chunk-count 150
               :chunk-size-bytes 524288
               :total-bytes 78643200
               :total-mib 75.0
               :upload-ok-count 150
               :upload-error-count 0
-              :upload-duration-ms 565756
-              :fetch-ok-count 150
-              :fetch-error-count 0
+              :upload-duration-ms 674117
+              :fetch-ok-count 149
+              :fetch-error-count 1
               :fetch-concurrency 12
-              :fetch-duration-ms 3956
-              :sha256-parity "150/150"
-              :missing-404-chunks []}
+              :fetch-duration-ms 4783
+              :sha256-parity "149/150"
+              :missing-404-chunks [{:idx 110
+                                    :cid "0af8076cca998605b36faaed3af95a978939dba2445f7eab44a2216a0a0356b1"
+                                    :upload-relay "https://ns3.bitecho.org"
+                                    :fetch-relay "https://ns1.bitecho.org"
+                                    :post-check-all-relays-404? true}]}
    :light-node-cli {:version "0.23.21"
                     :sha256 "a2a47a0c53a9e1c92480e9bfff660431be9b0c91faef64a12b2e6f1a73c62a89"
                     :auto-upgraded? false
@@ -63,79 +74,79 @@
                     :max-stdout-line-bytes 901
                     :max-stdout-total-bytes 902
                     :uint8-dump-detected? false}
-   :app-pin-isolation {:checks 11
+   :app-pin-isolation {:checks 12
                        :all-http-200? true
                        :all-release-seq-10? true
                        :coop "same-origin"
                        :coep "credentialless"}
-   :blob-stored-cold-observed {:ns1 150 :ns2 150 :ns3 150}
+   :blob-stored-cold-observed {:ns1 149 :ns2 149 :ns3 149}
    :lru-evictions-observed {:ns1 0 :ns2 0 :ns3 0}
    :peer-replicate-failed-delta {:ns1 0 :ns2 0 :ns3 0}
-   :status-endpoint {:baseline-finalized-epoch 83546
-                     :post-burst-finalized-epoch 83667
-                     :statusz-post-burst-epochs {:ns1 83667 :ns2 83667 :ns3 83667}
+   :status-endpoint {:baseline-finalized-epoch 83724
+                     :post-burst-finalized-epoch 83852
+                     :statusz-post-burst-epochs {:ns1 83852 :ns2 83852 :ns3 83852}
                      :max-epoch-skew 0
                      :anomaly nil}
    :telemetry
    {:baseline
-    {:captured-at "2026-11-22T16:16:12.380Z"
-     :ns1 {:head-epoch 83540 :finalized-epoch 83531 :epoch-finality-gap 9 :restart-count 20 :uptime-ms 60011
-           :rss-bytes 141234176 :rss-mib 134.69 :heap-used-bytes 40192424 :heap-used-mib 38.33
-           :heap-total-bytes 55877632 :v8-heap-headroom-pct 82.266 :event-loop-lag-p99-ms 4}
-     :ns2 {:head-epoch 83546 :finalized-epoch 83545 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 120008
-           :rss-bytes 149524480 :rss-mib 142.6 :heap-used-bytes 38560024 :heap-used-mib 36.77
-           :heap-total-bytes 58990592 :v8-heap-headroom-pct 82.886 :event-loop-lag-p99-ms 60}
-     :ns3 {:head-epoch 83545 :finalized-epoch 83544 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 120011
-           :rss-bytes 145977344 :rss-mib 139.21 :heap-used-bytes 37258608 :heap-used-mib 35.53
-           :heap-total-bytes 55844864 :v8-heap-headroom-pct 83.458 :event-loop-lag-p99-ms 85}}
+    {:captured-at "2026-11-22T16:37:11.674Z"
+     :ns1 {:head-epoch 83718 :finalized-epoch 83716 :epoch-finality-gap 2 :restart-count 20 :uptime-ms 1321021
+           :rss-bytes 226635776 :rss-mib 216.14 :heap-used-bytes 49441904 :heap-used-mib 47.15
+           :heap-total-bytes 76292096 :v8-heap-headroom-pct 78.059 :event-loop-lag-p99-ms 16}
+     :ns2 {:head-epoch 83725 :finalized-epoch 83724 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 1380010
+           :rss-bytes 184655872 :rss-mib 176.1 :heap-used-bytes 48938784 :heap-used-mib 46.67
+           :heap-total-bytes 69476352 :v8-heap-headroom-pct 78.313 :event-loop-lag-p99-ms 102}
+     :ns3 {:head-epoch 83723 :finalized-epoch 83721 :epoch-finality-gap 2 :restart-count 17 :uptime-ms 1380016
+           :rss-bytes 194285568 :rss-mib 185.29 :heap-used-bytes 44267056 :heap-used-mib 42.22
+           :heap-total-bytes 65019904 :v8-heap-headroom-pct 80.374 :event-loop-lag-p99-ms 2}}
     :post-burst-immediate
-    {:captured-at "2026-11-22T16:27:22.741Z"
-     :ns1 {:head-epoch 83641 :finalized-epoch 83640 :epoch-finality-gap 1 :restart-count 20 :uptime-ms 781020
-           :rss-bytes 200175616 :rss-mib 190.9 :heap-used-bytes 44522864 :heap-used-mib 42.46
-           :heap-total-bytes 65019904 :v8-heap-headroom-pct 80.223 :event-loop-lag-p99-ms 7}
-     :ns2 {:head-epoch 83638 :finalized-epoch 83637 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 780009
-           :rss-bytes 184197120 :rss-mib 175.66 :heap-used-bytes 39948000 :heap-used-mib 38.1
-           :heap-total-bytes 62922752 :v8-heap-headroom-pct 82.283 :event-loop-lag-p99-ms 1}
-     :ns3 {:head-epoch 83638 :finalized-epoch 83636 :epoch-finality-gap 2 :restart-count 17 :uptime-ms 780013
-           :rss-bytes 187953152 :rss-mib 179.25 :heap-used-bytes 43788552 :heap-used-mib 41.76
-           :heap-total-bytes 61349888 :v8-heap-headroom-pct 80.586 :event-loop-lag-p99-ms 47}}
+    {:captured-at "2026-11-22T16:49:54.693Z"
+     :ns1 {:head-epoch 83829 :finalized-epoch 83828 :epoch-finality-gap 1 :restart-count 20 :uptime-ms 2101024
+           :rss-bytes 272871424 :rss-mib 260.23 :heap-used-bytes 47992344 :heap-used-mib 45.77
+           :heap-total-bytes 75243520 :v8-heap-headroom-pct 78.698 :event-loop-lag-p99-ms 26}
+     :ns2 {:head-epoch 83828 :finalized-epoch 83827 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 2100011
+           :rss-bytes 192823296 :rss-mib 183.89 :heap-used-bytes 43313280 :heap-used-mib 41.31
+           :heap-total-bytes 68952064 :v8-heap-headroom-pct 80.797 :event-loop-lag-p99-ms 69}
+     :ns3 {:head-epoch 83827 :finalized-epoch 83824 :epoch-finality-gap 3 :restart-count 17 :uptime-ms 2100017
+           :rss-bytes 209711104 :rss-mib 200.0 :heap-used-bytes 42081232 :heap-used-mib 40.13
+           :heap-total-bytes 69476352 :v8-heap-headroom-pct 81.339 :event-loop-lag-p99-ms 360}}
     :post-burst-60s
-    {:captured-at "2026-11-22T16:29:16.348Z"
-     :ns1 {:head-epoch 83649 :finalized-epoch 83648 :epoch-finality-gap 1 :restart-count 20 :uptime-ms 841019
-           :rss-bytes 209805312 :rss-mib 200.09 :heap-used-bytes 46307440 :heap-used-mib 44.16
-           :heap-total-bytes 66330624 :v8-heap-headroom-pct 79.444 :event-loop-lag-p99-ms 46}
-     :ns2 {:head-epoch 83656 :finalized-epoch 83655 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 900009
-           :rss-bytes 177946624 :rss-mib 169.7 :heap-used-bytes 42685640 :heap-used-mib 40.71
-           :heap-total-bytes 62660608 :v8-heap-headroom-pct 81.074 :event-loop-lag-p99-ms 1}
-     :ns3 {:head-epoch 83656 :finalized-epoch 83654 :epoch-finality-gap 2 :restart-count 17 :uptime-ms 900014
-           :rss-bytes 181002240 :rss-mib 172.62 :heap-used-bytes 39654416 :heap-used-mib 37.82
-           :heap-total-bytes 62922752 :v8-heap-headroom-pct 82.411 :event-loop-lag-p99-ms 3}}
+    {:captured-at "2026-11-22T16:51:00.198Z"
+     :ns1 {:head-epoch 83838 :finalized-epoch 83836 :epoch-finality-gap 2 :restart-count 20 :uptime-ms 2161024
+           :rss-bytes 252133376 :rss-mib 240.45 :heap-used-bytes 54350912 :heap-used-mib 51.83
+           :heap-total-bytes 74457088 :v8-heap-headroom-pct 75.891 :event-loop-lag-p99-ms 14}
+     :ns2 {:head-epoch 83836 :finalized-epoch 83835 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 2160011
+           :rss-bytes 195821568 :rss-mib 186.75 :heap-used-bytes 45099472 :heap-used-mib 43.01
+           :heap-total-bytes 65282048 :v8-heap-headroom-pct 80.008 :event-loop-lag-p99-ms 1}
+     :ns3 {:head-epoch 83843 :finalized-epoch 83841 :epoch-finality-gap 2 :restart-count 17 :uptime-ms 2220018
+           :rss-bytes 194945024 :rss-mib 185.91 :heap-used-bytes 46272480 :heap-used-mib 44.13
+           :heap-total-bytes 67117056 :v8-heap-headroom-pct 79.489 :event-loop-lag-p99-ms 2}}
     :post-burst
-    {:captured-at "2026-11-22T16:30:33.465Z"
-     :ns1 {:head-epoch 83666 :finalized-epoch 83665 :epoch-finality-gap 1 :restart-count 20 :uptime-ms 961021
-           :rss-bytes 200380416 :rss-mib 191.1 :heap-used-bytes 43145112 :heap-used-mib 41.15
-           :heap-total-bytes 67117056 :v8-heap-headroom-pct 80.84 :event-loop-lag-p99-ms 1}
-     :ns2 {:head-epoch 83665 :finalized-epoch 83664 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 960009
-           :rss-bytes 180719616 :rss-mib 172.35 :heap-used-bytes 43396976 :heap-used-mib 41.39
-           :heap-total-bytes 65806336 :v8-heap-headroom-pct 80.76 :event-loop-lag-p99-ms 1}
-     :ns3 {:head-epoch 83663 :finalized-epoch 83661 :epoch-finality-gap 2 :restart-count 17 :uptime-ms 960013
-           :rss-bytes 180391936 :rss-mib 172.04 :heap-used-bytes 43872320 :heap-used-mib 41.84
-           :heap-total-bytes 62136320 :v8-heap-headroom-pct 80.547 :event-loop-lag-p99-ms 14}}
+    {:captured-at "2026-11-22T16:52:06.302Z"
+     :ns1 {:head-epoch 83846 :finalized-epoch 83845 :epoch-finality-gap 1 :restart-count 20 :uptime-ms 2221024
+           :rss-bytes 262668288 :rss-mib 250.5 :heap-used-bytes 56923632 :heap-used-mib 54.29
+           :heap-total-bytes 77864960 :v8-heap-headroom-pct 74.757 :event-loop-lag-p99-ms 2}
+     :ns2 {:head-epoch 83853 :finalized-epoch 83852 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 2280012
+           :rss-bytes 224718848 :rss-mib 214.31 :heap-used-bytes 52891136 :heap-used-mib 50.44
+           :heap-total-bytes 71835648 :v8-heap-headroom-pct 76.568 :event-loop-lag-p99-ms 1}
+     :ns3 {:head-epoch 83852 :finalized-epoch 83851 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 2280018
+           :rss-bytes 214568960 :rss-mib 204.63 :heap-used-bytes 44305944 :heap-used-mib 42.25
+           :heap-total-bytes 69214208 :v8-heap-headroom-pct 80.357 :event-loop-lag-p99-ms 54}}
     :deltas
-    {:ns1 {:finalized-epoch-delta 134 :restart-delta 0 :rss-delta-mib 56.41 :heap-used-delta-mib 2.82}
-     :ns2 {:finalized-epoch-delta 119 :restart-delta 0 :rss-delta-mib 29.75 :heap-used-delta-mib 4.62}
-     :ns3 {:finalized-epoch-delta 117 :restart-delta 0 :rss-delta-mib 32.83 :heap-used-delta-mib 6.31}}}
-   :checks {:upload-and-fetch-parity-ok? true
+    {:ns1 {:finalized-epoch-delta 129 :restart-delta 0 :rss-delta-mib 34.36 :heap-used-delta-mib 7.14}
+     :ns2 {:finalized-epoch-delta 128 :restart-delta 0 :rss-delta-mib 38.21 :heap-used-delta-mib 3.77}
+     :ns3 {:finalized-epoch-delta 130 :restart-delta 0 :rss-delta-mib 19.34 :heap-used-delta-mib 0.03}}}
+   :checks {:upload-and-fetch-parity-ok? false
             :zero-ooms-and-restarts? true
             :zero-finality-stalls? true
             :zero-uint8-stdout-dumps? true
             :app-pin-isolated? true
-            :rss-under-200-mib? true
+            :rss-under-200-mib? false
             :rss-delta-under-32-mib? false}}
 
   :p-fail-1
   {:verdict :pass
-   :summary "PASS! Chrome 156 CDP verified 0 CSP violations, 0 console errors, 0 uncaught exceptions, 0 log errors, crossOriginIsolated=true, X-Bitecho-Release-Seq=10, and initial #relay-health-pill Relays: 3/3 (relay-pill ok, :ok) with 0 epoch skew across ns1/ns2/ns3 /statusz (83676/83676/83676). Blocking active lowest-RTT primary ns2 mid-flight via CDP Network.setBlockedURLs triggered counted failover (relay-failover=1) while fetching live BIP-017a af_heart (8/8 chunks via ns3, 522,320 B, exact SHA-256), transitioning #relay-health-pill to amber Relays: 2/3 (relay-pill warn, :relay-degraded, not :chain-stalled). Unblocking + probe() recovered cleanly to Relays: 3/3 (relay-pill ok, :ok) with relay-recovered=1 and 0 :relay-stale-epoch quarantines."
+   :summary "PASS! Chrome 156 CDP verified 0 CSP violations, 0 console errors, 0 uncaught exceptions, 0 log errors, crossOriginIsolated=true, X-Bitecho-Release-Seq=10, and initial #relay-health-pill Relays: 3/3 (relay-pill ok, :ok) with 0 epoch skew across ns1/ns2/ns3 /statusz (83858/83858/83858). Blocking active lowest-RTT primary ns2 (263 ms) mid-flight via CDP Network.setBlockedURLs triggered counted failover (relay-failover=1) while fetching live BIP-017a af_heart (8/8 chunks via ns3, 522,320 B, exact SHA-256), transitioning #relay-health-pill to amber Relays: 2/3 (relay-pill warn, :relay-degraded, not :chain-stalled). Unblocking + probe() recovered cleanly to Relays: 3/3 (relay-pill ok, :ok) with relay-recovered=1 and 0 :relay-stale-epoch quarantines."
    :browser {:product "Chrome/156.0.8078.47"
              :headless-mode "headless=new"
              :transport "raw-cdp-websocket"
@@ -152,9 +163,9 @@
              :blast-radius :ok
              :healthy-count 3
              :total-count 3
-             :live-statusz-epochs {:ns1 {:role "leader" :epoch 83676}
-                                   :ns2 {:role "follower" :epoch 83676}
-                                   :ns3 {:role "follower" :epoch 83676}}}
+             :live-statusz-epochs {:ns1 {:role "leader" :epoch 83858}
+                                   :ns2 {:role "follower" :epoch 83858}
+                                   :ns3 {:role "follower" :epoch 83858}}}
    :fault-injection {:blocked-urls ["https://ns2.bitecho.org/*"]
                      :artifact "af_heart"
                      :manifest-cid "f5122cb51e7b16927fd37033c133e01100e6209e13b3e9405688d5be43c0136d"
@@ -162,7 +173,7 @@
                      :total-bytes 522320
                      :opfs-size-bytes 522320
                      :chunks-completed "8/8"
-                     :last-progress-text "af_heart 8/8 via ns3"
+                     :last-progress-text "af_heart 8/8 via relay"
                      :pill-text "Relays: 2/3"
                      :pill-class "relay-pill warn"
                      :blast-radius :relay-degraded
@@ -172,9 +183,9 @@
                                    :ignored-stale-relay-callback 0}}
    :recovery {:blocked-urls []
               :all-relays-recovered-healthy? true
-              :relays {:ns1 {:ewma-rtt-ms 320 :finalized-epoch 83676}
-                       :ns2 {:ewma-rtt-ms 248 :finalized-epoch 83676}
-                       :ns3 {:ewma-rtt-ms 71 :finalized-epoch 83676}}
+              :relays {:ns1 {:ewma-rtt-ms 330 :finalized-epoch 83858}
+                       :ns2 {:ewma-rtt-ms 199 :finalized-epoch 83858}
+                       :ns3 {:ewma-rtt-ms 69 :finalized-epoch 83858}}
               :pill-text "Relays: 3/3"
               :pill-class "relay-pill ok"
               :blast-radius :ok
@@ -182,9 +193,9 @@
                             :relay-stale-epoch 0
                             :relay-recovered 1
                             :ignored-stale-relay-callback 0}
-              :live-statusz-epochs {:ns1 {:role "leader" :epoch 83676}
-                                    :ns2 {:role "follower" :epoch 83676}
-                                    :ns3 {:role "follower" :epoch 83676}}}
+              :live-statusz-epochs {:ns1 {:role "leader" :epoch 83858}
+                                    :ns2 {:role "follower" :epoch 83858}
+                                    :ns3 {:role "follower" :epoch 83858}}}
    :checks {:zero-csp-and-console-errors? true
             :cross-origin-isolated? true
             :statusz-epoch-skew-le-6? true
@@ -198,16 +209,22 @@
    :gate :p-fail-1
    :status :resolved
    :verified-in-run 2
-   :resolution "Fixed in v0.23.21 (621136e) and re-verified in Run 3 (f1826fd) and Run 4 (a2ba65a): /statusz and /status read live :last-executed-finalized-epoch across ns1/ns2/ns3 (83676/83676/83676, 0 skew, 0 :relay-stale-epoch quarantines, #relay-health-pill recovers cleanly to Relays: 3/3)."}
+   :resolution "Fixed in v0.23.21 (621136e) and re-verified in Run 3 (f1826fd), Run 4 (a2ba65a), and Warm-Baseline Run 5 (a2ba65a): /statusz and /status read live :last-executed-finalized-epoch across ns1/ns2/ns3 (83858/83858/83858, 0 skew, 0 :relay-stale-epoch quarantines, #relay-health-pill recovers cleanly to Relays: 3/3)."}
   {:id "BIP-018-SOAK-F3"
    :gate :p-mem-1
    :status :resolved
    :verified-in-run 3
-   :resolution "Fixed in v0.23.21 (f1826fd) and re-verified in Run 4 (a2ba65a): 150/150 one-shot artifact-put uploads round-robin across ns1/ns2/ns3 verified 150/150 cross-relay HTTPS GET /artifact/v1/blob/<cid> SHA-256 parity with 0 HTTP 404s and 0 peer-artifact-replicate-failed delta across all 3 relays."}]
+   :resolution "Peer blob replication failure fixed in v0.23.21 (f1826fd) and verified with 0 peer-artifact-replicate-failed delta in Runs 3, 4, and 5; Run 5 uncovered a distinct single-chunk silent cold-store drop (BIP-018-SOAK-F4) where chunk-110 was never stored on the upload relay itself (404 on all 3 relays)."}]
  :actionable-followups
  [{:id "BIP-018-SOAK-F1"
    :gate :p-mem-1
    :severity :blocker
    :status :open
-   :finding "a2ba65a achieved a major RSS reduction (-35 to -40 MiB vs Run 3) and brought ALL 3 relays cleanly under the <= 200 MiB ceiling (ns1 191.10 MiB, ns2 172.35 MiB, ns3 172.04 MiB) with 150/150/150 :blob-stored-cold and flat V8 heap (41.15/41.39/41.84 MiB, ~80.5-80.8% headroom). Follower ns2 passed the <= 32 MiB delta ceiling (+29.75 MiB), while follower ns3 settled narrowly over at +32.83 MiB (+0.83 MiB over) and leader ns1 settled at +56.41 MiB (+24.41 MiB over, from a 60s cold-start baseline of 134.69 MiB). Remaining ~19 MiB leader-vs-follower gap and ~30-33 MiB non-heap burst retention likely stem from leader consensus/pointer-store/LMDB or TLS/HTTP buffer pools and cold-start baseline warmup."
+   :finding "Warm-Baseline Run 5 (no node restarts; ~22-23 min uptime baseline) proved that a2ba65a's RSS growth is NOT just cold-start warmup: ALL 3 relays crossed the <= 200 MiB steady-state ceiling after a second 75 MiB burst (ns1 216.14 -> 250.50 MiB, +34.36 MiB; ns2 176.10 -> 214.31 MiB, +38.21 MiB; ns3 185.29 -> 204.63 MiB, +19.34 MiB), and ns1 had already drifted +25.04 MiB during idle epochs between Run 4 (191.10 MiB) and Run 5 baseline (216.14 MiB). V8 heap remained small and flat (54.29/50.44/42.25 MiB, 74.8-80.4% headroom), confirming unbounded native/off-heap RSS accumulation (glibc malloc arenas/fragmentation, LMDB mmap working set, or Node/OpenSSL/libuv native buffers)."
+   :target-repo "alpeware/bitecho"}
+  {:id "BIP-018-SOAK-F4"
+   :gate :p-mem-1
+   :severity :blocker
+   :status :open
+   :finding "Silent cold-store drop on 1 of 150 chunks during Run 5: one-shot artifact-put for chunk-110 (cid 0af8076cca998605b36faaed3af95a978939dba2445f7eab44a2216a0a0356b1) to ns3 returned ok=true with 0 upload errors, yet blob-stored-cold incremented by only +149/+149/+149 (150 -> 299) across ns1/ns2/ns3, peer-artifact-replicate-failed delta was 0, and GET/HEAD /artifact/v1/blob/0af8076cca998605b36faaed3af95a978939dba2445f7eab44a2216a0a0356b1 returned HTTP 404 on ALL 3 relays (ns1, ns2, ns3)."
    :target-repo "alpeware/bitecho"}]}
