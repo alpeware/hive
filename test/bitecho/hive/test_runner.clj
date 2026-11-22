@@ -7,6 +7,7 @@
             [bitecho.hive.seed-to-round-test]
             [bitecho.hive.top-loop-test]
             [bitecho.hive.trace-viz-test]
+            [bitecho.hive.twin-stage1-test]
             [clojure.test :as t]))
 
 (defn -main
@@ -18,7 +19,8 @@
                              'bitecho.hive.top-loop-test
                              'bitecho.hive.genesis-test
                              'bitecho.hive.seed-to-round-test
-                             'bitecho.hive.trace-viz-test)]
+                             'bitecho.hive.trace-viz-test
+                             'bitecho.hive.twin-stage1-test)]
     (shutdown-agents)
     (when (pos? (+ (:fail summary 0) (:error summary 0)))
       (System/exit 1))))
