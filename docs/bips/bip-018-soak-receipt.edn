@@ -1,0 +1,147 @@
+{:schema :bitecho/bip-soak-receipt-v1
+ :bip-id "BIP-018"
+ :repo "alpeware/hive"
+ :executed-at "2026-11-22T14:26:56Z"
+ :completed-at "2026-11-22T14:31:56Z"
+ :cluster {:version "0.23.21"
+           :bundle-sha256 "6ea887c3b046787474c8fd27741c9614dc6b74900892c96045f0947502151d32"
+           :relays ["https://ns1.bitecho.org"
+                    "https://ns2.bitecho.org"
+                    "https://ns3.bitecho.org"]
+           :app-release-seq 10
+           :app-release-cid "6b12942c191d6d1e01f620692ae1e528652d3d768da9cb79eabd8d0753e9af5c"
+           :app-index-blob-cid "f3f896cdf720506258ec30107b977aff3b9dc6bb628904c774d8dcd0e4b89247"}
+ :overall-verdict :fail-with-actionable-findings
+ :gates
+ {:p-mem-1
+  {:verdict :fail
+   :summary "150/150 512 KiB chunks uploaded & cross-relay SHA-256 verified, 32 MiB hot-LRU evicted 168/170/170 blobs, /app/ seq 10 pinned 200 throughout, 0 OOMs, 0 restarts, 0 finality stalls, 0 Uint8Array stdout dumps (max 901 B), V8 heap-used stayed 33.74-37.85 MiB (>90.6% headroom); HOWEVER total process RSS exceeded the <= 200 MiB ceiling (228.14 / 207.90 / 204.23 MiB) and <= 32 MiB delta (+54.11 / +36.98 / +52.87 MiB)."
+   :workload {:seed "bip-018-pmem1-soak-2026-11-22-run1"
+              :chunk-count 150
+              :chunk-size-bytes 524288
+              :total-bytes 78643200
+              :total-mib 75.0
+              :upload-ok-count 150
+              :upload-error-count 0
+              :upload-duration-ms 226867
+              :fetch-ok-count 150
+              :fetch-error-count 0
+              :fetch-concurrency 12
+              :fetch-duration-ms 4464
+              :sha256-parity "150/150"}
+   :light-node-cli {:version "0.23.21"
+                    :mode :one-shot-artifact-put
+                    :max-stdout-line-bytes 901
+                    :max-stdout-total-bytes 902
+                    :uint8-dump-detected? false}
+   :app-pin-isolation {:checks 7
+                       :all-http-200? true
+                       :all-release-seq-10? true
+                       :coop "same-origin"
+                       :coep "credentialless"}
+   :lru-evictions-observed {:ns1 168 :ns2 170 :ns3 170}
+   :status-endpoint {:baseline-finalized-epoch 82489
+                     :post-burst-sampled-epoch 1
+                     :post-burst-settled-epoch 82532
+                     :anomaly "https://bitecho.org/status momentarily returned finalized_epoch=1 when served by follower ns2 whose /statusz reports stale epoch=1."}
+   :telemetry
+   {:baseline
+    {:captured-at "2026-11-22T14:26:57.463Z"
+     :ns1 {:head-epoch 82488 :finalized-epoch 82486 :epoch-finality-gap 2 :restart-count 17 :uptime-ms 240010
+           :rss-bytes 182480896 :rss-mib 174.03 :heap-used-bytes 35981600 :heap-used-mib 34.31
+           :heap-total-bytes 60563456 :v8-heap-headroom-pct 91.536 :event-loop-lag-p99-ms 22}
+     :ns2 {:head-epoch 82486 :finalized-epoch 82485 :epoch-finality-gap 1 :restart-count 14 :uptime-ms 240005
+           :rss-bytes 179220480 :rss-mib 170.92 :heap-used-bytes 44483640 :heap-used-mib 42.42
+           :heap-total-bytes 61349888 :v8-heap-headroom-pct 89.565 :event-loop-lag-p99-ms 58}
+     :ns3 {:head-epoch 82486 :finalized-epoch 82485 :epoch-finality-gap 1 :restart-count 14 :uptime-ms 240007
+           :rss-bytes 158711808 :rss-mib 151.36 :heap-used-bytes 35799624 :heap-used-mib 34.14
+           :heap-total-bytes 60039168 :v8-heap-headroom-pct 91.595 :event-loop-lag-p99-ms 407}}
+    :post-burst
+    {:captured-at "2026-11-22T14:31:04.608Z"
+     :ns1 {:head-epoch 82529 :finalized-epoch 82528 :epoch-finality-gap 1 :restart-count 17 :uptime-ms 480011
+           :rss-bytes 239222784 :rss-mib 228.14 :heap-used-bytes 39665064 :heap-used-mib 37.83
+           :heap-total-bytes 61874176 :v8-heap-headroom-pct 90.67 :event-loop-lag-p99-ms 39}
+     :ns2 {:head-epoch 82528 :finalized-epoch 82527 :epoch-finality-gap 1 :restart-count 14 :uptime-ms 480006
+           :rss-bytes 218001408 :rss-mib 207.9 :heap-used-bytes 39689672 :heap-used-mib 37.85
+           :heap-total-bytes 56631296 :v8-heap-headroom-pct 90.681 :event-loop-lag-p99-ms 46}
+     :ns3 {:head-epoch 82528 :finalized-epoch 82527 :epoch-finality-gap 1 :restart-count 14 :uptime-ms 480007
+           :rss-bytes 214147072 :rss-mib 204.23 :heap-used-bytes 35375256 :heap-used-mib 33.74
+           :heap-total-bytes 57679872 :v8-heap-headroom-pct 91.69 :event-loop-lag-p99-ms 99}}
+    :deltas
+    {:ns1 {:finalized-epoch-delta 42 :restart-delta 0 :rss-delta-mib 54.11 :heap-used-delta-mib 3.52}
+     :ns2 {:finalized-epoch-delta 42 :restart-delta 0 :rss-delta-mib 36.98 :heap-used-delta-mib -4.57}
+     :ns3 {:finalized-epoch-delta 42 :restart-delta 0 :rss-delta-mib 52.87 :heap-used-delta-mib -0.4}}}
+   :checks {:upload-and-fetch-parity-ok? true
+            :zero-ooms-and-restarts? true
+            :zero-finality-stalls? true
+            :zero-uint8-stdout-dumps? true
+            :app-pin-isolated? true
+            :rss-under-200-mib? false
+            :rss-delta-under-32-mib? false}}
+
+  :p-fail-1
+  {:verdict :fail
+   :summary "Chrome 156 CDP verified 0 CSP violations, 0 console errors, 0 uncaught exceptions, crossOriginIsolated=true, X-Bitecho-Release-Seq=10, and 100% per-chunk failover of af_heart (8/8 chunks, 522,320 B, exact SHA-256, relay-failover=2) while ns1 was blocked via Network.setBlockedURLs. ns1 recovered cleanly to healthy (ep=82537, rtt=317ms, relay-recovered=3) after unblocking; HOWEVER #relay-health-pill did not recover to Relays: 3/3 (remained amber Relays: 1/3 :relay-degraded) because follower /statusz on ns2 (epoch=1) and ns3 (epoch=82448) lags leader ns1 (epoch=82537) by >6 epochs, triggering BIP-018 Edge Case #2 stale-epoch quarantine."
+   :browser {:product "Chrome/156.0.8078.47"
+             :headless-mode "headless=new"
+             :transport "raw-cdp-websocket"
+             :url "https://bitecho.org/app/"
+             :http-status 200
+             :release-seq 10
+             :cross-origin-isolated? true
+             :csp-violations 0
+             :console-errors 0
+             :uncaught-exceptions 0
+             :log-errors 0}
+   :initial {:pill-text "Relays: 3/3"
+             :pill-class "relay-pill ok"
+             :blast-radius :ok
+             :healthy-count 3
+             :total-count 3}
+   :fault-injection {:blocked-urls ["https://ns1.bitecho.org/*"]
+                     :artifact "af_heart"
+                     :manifest-cid "f5122cb51e7b16927fd37033c133e01100e6209e13b3e9405688d5be43c0136d"
+                     :total-sha256 "2c1c733b0e6576c810e268d3e440c21dea4e0f0131a3ba4cfc98d7fe6136d094"
+                     :total-bytes 522320
+                     :opfs-size-bytes 522320
+                     :chunks-completed "8/8"
+                     :last-progress-text "af_heart 8/8 via ns3 · 1 failover"
+                     :pill-text "Relays: 1/3"
+                     :pill-class "relay-pill warn"
+                     :blast-radius :relay-degraded
+                     :diagnostics {:relay-failover 2
+                                   :relay-stale-epoch 4
+                                   :relay-recovered 2
+                                   :ignored-stale-relay-callback 0}}
+   :recovery {:blocked-urls []
+              :ns1-recovered-healthy? true
+              :ns1-ewma-rtt-ms 317
+              :ns1-finalized-epoch 82537
+              :pill-text "Relays: 1/3"
+              :pill-class "relay-pill warn"
+              :blast-radius :relay-degraded
+              :diagnostics {:relay-failover 2
+                            :relay-stale-epoch 5
+                            :relay-recovered 3
+                            :ignored-stale-relay-callback 0}
+              :live-statusz-epochs {:ns1 {:role "leader" :epoch 82539}
+                                    :ns2 {:role "follower" :epoch 1}
+                                    :ns3 {:role "follower" :epoch 82448}}}
+   :checks {:zero-csp-and-console-errors? true
+            :cross-origin-isolated? true
+            :chunked-failover-sha256-parity? true
+            :counted-failover-diagnostics-ge-1? true
+            :degraded-not-stalled-during-fault? true
+            :ns1-recovered-after-unblock? true
+            :pill-recovered-to-3-of-3? false}}}
+ :actionable-followups
+ [{:id "BIP-018-SOAK-F1"
+   :gate :p-mem-1
+   :severity :blocker
+   :finding "Node.js process RSS rose to 228.14 / 207.90 / 204.23 MiB (+54.11 / +36.98 / +52.87 MiB) under 75 MiB burst despite 32 MiB hot-LRU evictions (168/170/170) and flat V8 heap (33.74-37.85 MiB). Reduce baseline/external Buffer retention or tighten hot-LRU ceiling (e.g., 16 MiB) + MALLOC_ARENA_MAX=2 so steady-state RSS stays <= 200 MiB."
+   :target-repo "alpeware/bitecho"}
+  {:id "BIP-018-SOAK-F2"
+   :gate :p-fail-1
+   :severity :blocker
+   :finding "Follower /statusz on ns2 (epoch=1) and ns3 (epoch=82448) reports stale local infra runtime epoch instead of live validator finalized-epoch (82527+), triggering BIP-018 Edge Case #2 stale-epoch quarantine in #relay-health-pill and occasional finalized_epoch=1 on https://bitecho.org/status."
+   :target-repo "alpeware/bitecho"}]}
