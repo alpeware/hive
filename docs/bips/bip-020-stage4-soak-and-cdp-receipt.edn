@@ -1,15 +1,16 @@
 {:schema :bitecho/bip-stage4-soak-and-cdp-receipt-v1
  :bip-id "BIP-020"
  :stage :stage-4-soak-and-chrome-cdp-e2e
+ :run 2
  :branch "bip-020-hive-ui-parity"
  :hive-ui-commit "86a11c3cceada4da977d7e92b87fc137f7494a60"
  :repo "alpeware/hive"
- :executed-at "2026-11-23T00:15:28.978Z"
- :completed-at "2026-11-23T00:46:46.697Z"
+ :executed-at "2026-11-23T01:17:23.785Z"
+ :completed-at "2026-11-23T01:21:06.619Z"
  :environment {:host-os "linux"
                :node-runtime "v22.23.5"
                :chrome-version "Chrome/156.0.8078.47"
-               :isolation {:staging-cluster-dir "/tmp/bip020-stage4/"
+               :isolation {:staging-cluster-dir "/tmp/bip020-stage4-run2/"
                            :staging-http-ports [18401 18402 18403 18404 18405 18406]
                            :staging-diag-ports [18401 18402 18403 18484 18485 18486]
                            :staging-mesh-base-ports [18410 18420 18430 18440 18450 18460]
@@ -18,32 +19,64 @@
                            :static-web-port 18480
                            :chrome-cdp-port 18492
                            :live-production-state-untouched? true}}
- :verified-bundles {:version "0.23.21"
+ :verified-bundles {:git-commit "0c3958e"
+                    :version "0.23.21"
                     :full-node {:filename "bitecho-full-node.js"
-                                :url "https://ns1.bitecho.org/artifact/v1/blob/d92d23c3a0c8b67a129d9603db92df68c5bbed9fce3ad7526ff169ad19a2d8c6"
-                                :sha256 "d92d23c3a0c8b67a129d9603db92df68c5bbed9fce3ad7526ff169ad19a2d8c6"
-                                :bytes 1685101
+                                :url "https://ns1.bitecho.org/artifact/v1/blob/bacb278bf916bc08a0aaa6e782a4b4e10741513305d1cad051c72349cf00f67a"
+                                :sha256 "bacb278bf916bc08a0aaa6e782a4b4e10741513305d1cad051c72349cf00f67a"
+                                :bytes 1685423
                                 :verified? true}
                     :light-node {:filename "bitecho-light-node.js"
-                                 :url "https://ns1.bitecho.org/artifact/v1/blob/3c07e0afd6ce927271442a4fb5986987739cf1d2232c84d40357e92e77ffc440"
-                                 :sha256 "3c07e0afd6ce927271442a4fb5986987739cf1d2232c84d40357e92e77ffc440"
-                                 :bytes 1711217
+                                 :url "https://ns1.bitecho.org/artifact/v1/blob/4daafab057174170c3ffd8376c39210d14f81248374d13e20edade5721f2db9b"
+                                 :sha256 "4daafab057174170c3ffd8376c39210d14f81248374d13e20edade5721f2db9b"
+                                 :bytes 1712152
                                  :verified? true}
                     :browser {:filename "bitecho-browser.js"
                               :url "https://ns1.bitecho.org/artifact/v1/blob/21cbcdbac1aad9ebeb0ac5ba5d5389808b88790856c8935951979871a8105508"
                               :sha256 "21cbcdbac1aad9ebeb0ac5ba5d5389808b88790856c8935951979871a8105508"
                               :bytes 1633099
                               :sri "sha384-WRPMyemj6CDuOsW+HPon/7yPEmXQxs0Y/ilgxom8/ovv41QH0o1B8KegrG8LB5IR"
-                              :verified? true}}
- :overall-verdict :partial-pass-gate-b-pass-gate-a-fail-with-actionable-findings
- :gate-verdicts {:gate-a-multi-node-staging-soak :fail-with-actionable-findings
+                              :verified? true
+                              :note "Unchanged from Run 1; Gate B Chrome/156 CDP E2E remains 100% PASS."}}
+ :overall-verdict :pass
+ :gate-verdicts {:gate-a-multi-node-staging-soak :pass
                  :gate-b-headless-chrome-cdp-e2e :pass}
- :summary "BIP-020 Stage 4 Verification Results: Gate B (Real Headless Chrome/156.0.8078.47 --headless=new Raw-CDP E2E pairing bip-020-hive-ui-parity /app/ with 21cbcdba... bitecho-browser.js) is a 100% PASS across every single criterion (0 CSP violations, 0 console errors, 0 uncaught exceptions, crossOriginIsolated=true, 6/6 WebRTC peers connected in 604ms, Pillar 1-4 diagnostics drawer rendered cleanly, populated string-keyed sorted-map :petnames resolve-peer-target executed with 0 CompareError, 6-peer ICE cascade fault injection detected meshConnected=false in 164ms <= 5000ms with honest #api-badge transition to DEGRADED (relay) never stuck green LIVE, dead-mesh send failed loudly with ok=false error=no-open-mesh-channels + counted :diagnose 6->11 + inline 'rejected (no-open-mesh-channels)' pill, bounded auto-redial maxConcurrentDials=2 <= 2 and outageDialAttempts=2 <= 5, full recovery to LIVE in 3,533ms, JS heap delta +3.95 MiB <= 16 MiB). Gate A (Multi-Node Staging Soak with d92d23c3... + 3c07e0af... on isolated 6-node cluster TICK_MS=1500 + 3 light-node daemons alice/bob[P2P+mesh]/carol[mesh-only]) is an HONEST FAIL WITH ACTIONABLE FINDINGS (2 findings: BIP-020-STAGE4-F1 and BIP-020-STAGE4-F2): cluster stability, epoch finality (296 settled >= 144, 0 skew), 6/6 staggered rolling restarts (node3->node2->node1->ns3->ns2->ns1, recovered in 20.1s..48.2s), --events-out mismatch loud WARN + control.json events_out, ctl status Pillar 1-4 telemetry + 256-entry ring buffer, latency (p50=111ms, p95=730ms, p99=1,062ms <= 5s), and resource bounds (peak RSS 153.61..158.09 MiB <= 200 MiB, 0 HTTP 429, 0 OOMs/crashes) ALL PASSED; however, mesh-only subscriber carol on ns3 received 52/52 direct mesh DMs (100%) but 0/105 subnet broadcasts (BIP-020-STAGE4-F1: 105 silent drops across multi-relay ns1->ns3 subnet broadcast fanout, while P2P-connected bob received 158/158 = 100% + 105 duplicate_replay), AND http-relay light-node delivery_telemetry.sent and fanout.{mesh_submitted,p2p_direct} remained 0 despite 210 ok=true sends and 105 acks (BIP-020-STAGE4-F2)."
+ :summary "BIP-020 Stage 4 Verification Results (Run 2): 100% PASS across BOTH Gate A and Gate B! Gate A Run 2 (Multi-Node Staging Soak against Nexus's 0c3958e F1+F2-fixed bundles bacb278b... [1,685,423 B] + 4daafab0... [1,712,152 B] on isolated 6-node cluster TICK_MS=1500 + 3 light-node daemons alice/bob[P2P+mesh]/carol[mesh-only]) PASSED every single criterion: BIP-020-STAGE4-F1 is 100% RESOLVED (mesh-only carol on ns3 received 105/105 subnet broadcasts [100%] + 52/52 direct mesh DMs [100%] = 157/157, and P2P+mesh bob on ns2 received 105/105 subnet broadcasts + 53/53 direct P2P DMs = 158/158, 0 silent drops across all 315 deliveries, latency p50=158ms, p95=1,060ms, p99=1,153ms, max=1,170ms <= 5,000ms); BIP-020-STAGE4-F2 is 100% RESOLVED (alice ctl status reports honest delivery_telemetry.sent=210, acked=105, ring_buffer_count=256 <= 256, fanout={mesh_submitted:157, p2p_direct:210, peers_targeted:472, mesh_submit_failed:0}, and honest synchronous ctl broadcast/send receipt fields with route/mesh_submitted/p2p_direct/peers_targeted); 144 consecutive finalized epochs settled across all 6 nodes with 0 skew; 6/6 staggered rolling restarts (node3->node2->node1->ns3->ns2->ns1) all recovered cleanly in 6.7s..38.9s; --events-out mismatch loud WARN + control.json events_out verified; resource bounds passed with peak RSS 140.27..146.89 MiB <= 200 MiB, 0 HTTP 429 waiter-exhaustion errors, 0 OOMs/crashes. Gate B (Real Headless Chrome/156.0.8078.47 --headless=new Raw-CDP E2E on untouched 21cbcdba... bitecho-browser.js + bip-020-hive-ui-parity /app/) remains 100% PASS."
+ :prior-runs
+ [{:run 1
+   :executed-at "2026-11-23T00:15:28.978Z"
+   :completed-at "2026-11-23T00:46:46.697Z"
+   :full-node-sha256 "d92d23c3a0c8b67a129d9603db92df68c5bbed9fce3ad7526ff169ad19a2d8c6"
+   :light-node-sha256 "3c07e0afd6ce927271442a4fb5986987739cf1d2232c84d40357e92e77ffc440"
+   :browser-sha256 "21cbcdbac1aad9ebeb0ac5ba5d5389808b88790856c8935951979871a8105508"
+   :receipt-cid "f92ec512501e19b7de2543333c8a30816d74208b046b7f127a390eb3dd9cabe1"
+   :receipt-bytes 17188
+   :overall-verdict :partial-pass-gate-b-pass-gate-a-fail-with-actionable-findings
+   :gate-verdicts {:gate-a-multi-node-staging-soak :fail-with-actionable-findings
+                   :gate-b-headless-chrome-cdp-e2e :pass}
+   :findings ["BIP-020-STAGE4-F1" "BIP-020-STAGE4-F2"]
+   :note "Gate B Chrome/156 CDP E2E passed 100%; Gate A failed with F1 (carol received 0/105 subnet broadcasts across ns1->ns3) and F2 (alice delivery_telemetry.sent=0 and fanout=0 on http-relay). Both findings resolved in 0c3958e and verified in Run 2."}]
+ :resolved-followups
+ [{:id "BIP-020-STAGE4-F1"
+   :severity :critical
+   :resolved-in-commit "0c3958e"
+   :resolved-in-run 2
+   :component "bitecho-full-node.js (bacb278b...) / relay-to-relay & validator-bridge subnet broadcast replication"
+   :summary "Mesh-only subscriber carol (on ns3:18406, subscribed to bip020.test/soak) received 105/105 subnet broadcasts (100%) and 52/52 direct mesh DMs (100%) from alice (on ns1:18404), and P2P+mesh subscriber bob (on ns2:18405) received 105/105 subnet broadcasts (100%) and 53/53 direct P2P DMs (100%) — 0 silent drops across all 315 expected deliveries."
+   :verified? true}
+  {:id "BIP-020-STAGE4-F2"
+   :severity :high
+   :resolved-in-commit "0c3958e"
+   :resolved-in-run 2
+   :component "bitecho-light-node.js (4daafab0...) / http-relay delivery_telemetry accounting"
+   :summary "On alice (http-relay transport), after 210 ok=true sends (105 subnet broadcasts + 53 P2P DMs + 52 mesh DMs), ctl status reported honest delivery_telemetry.sent=210, acked=105, ring_buffer_count=256 (<= 256), and fanout={mesh_submitted:157, p2p_direct:210, peers_targeted:472, mesh_submit_failed:0}, and synchronous ctl broadcast/send receipts returned accurate route/mesh_submitted/p2p_direct/peers_targeted fields."
+   :verified? true}]
  :gate-a
- {:verdict :fail-with-actionable-findings
-  :started-at "2026-11-23T00:39:16.708Z"
-  :completed-at "2026-11-23T00:46:46.697Z"
-  :duration-sec 430.57
+ {:verdict :pass
+  :run 2
+  :started-at "2026-11-23T01:17:23.785Z"
+  :completed-at "2026-11-23T01:21:06.619Z"
+  :duration-sec 222.83
   :topology {:validators [:node1 :node2 :node3]
              :infra-relays [:ns1 :ns2 :ns3]
              :tick-ms 1500
@@ -52,16 +85,16 @@
                            {:id :carol :role :mesh-only-subscriber :primary-relay "http://127.0.0.1:18406" :p2p-ingress-port nil}]
              :subnet-id "bip020.test/soak"
              :petnames-populated? true
-             :sessions-established {:alice-bob "18d4662c4d908a51c7dc45adb57e9d7825d1a9285cd6027831eb948c21318146"
-                                    :alice-carol "2d45b8cafffce399e01142769568d165e507c41b5fd6880041f172c96e7fbc6f"}}
+             :sessions-established {:alice-bob "6b5eb65b3a410804b21db695eca05d2cba7796791365f78462a6d7d472d9040b"
+                                    :alice-carol "0b62960be1a13c5a01d8a058cec14621d1fd3d8a8718a5d423df9da434226dbb"}}
   :criteria-evaluation
   {:consecutive-finalized-epochs-ge-144 {:passed? true
                                          :required ">= 144"
-                                         :observed-min-settled 296
-                                         :observed-per-node-final {:node1 297 :node2 297 :node3 297 :ns1 297 :ns2 297 :ns3 297}
+                                         :observed-min-settled 144
+                                         :observed-per-node-final {:node1 144 :node2 144 :node3 144 :ns1 144 :ns2 144 :ns3 144}
                                          :settled-skew 0}
-   :mixed-messaging-ge-200-zero-silent-drops {:passed? false
-                                              :finding-ids ["BIP-020-STAGE4-F1" "BIP-020-STAGE4-F2"]
+   :mixed-messaging-ge-200-zero-silent-drops {:passed? true
+                                              :resolved-finding-ids ["BIP-020-STAGE4-F1" "BIP-020-STAGE4-F2"]
                                               :required ">= 200 mixed direct + subnet broadcasts across P2P and mesh-only subscribers, 0 silent drops, p99 <= 5000ms, truthful mesh_submitted/p2p_direct/sent/acked"
                                               :observed {:total-attempted 210
                                                          :total-sent-ok 210
@@ -69,49 +102,42 @@
                                                          :subnet-broadcasts 105
                                                          :direct-p2p-dms 53
                                                          :direct-mesh-dms 52
-                                                         :bob-p2p-and-mesh {:expected 158 :delivered 158 :broadcast-received 105 :message-received 53 :duplicate-replay 105}
-                                                         :carol-mesh-only {:expected 157 :delivered 52 :broadcast-received 0 :message-received 52 :duplicate-replay 0}
-                                                         :silent-drops 105
-                                                         :latency-ms {:p50 111 :p95 730 :p99 1062 :max 1102 :within-5s? true}
-                                                         :alice-telemetry {:sent 0 :acked 105 :ring-buffer-count 210 :ring-buffer-max 256 :mesh-submitted 0 :p2p-direct 0 :duplicate-replay 105}}}
+                                                         :bob-p2p-and-mesh {:expected 158 :delivered 158 :broadcast-received 105 :message-received 53 :duplicate-replay 210 :foreign-unicast 52}
+                                                         :carol-mesh-only {:expected 157 :delivered 157 :broadcast-received 105 :message-received 52 :duplicate-replay 0}
+                                                         :silent-drops 0
+                                                         :latency-ms {:samples 315 :p50 158 :p95 1060 :p99 1153 :max 1170 :within-5s? true}
+                                                         :alice-telemetry {:sent 210 :acked 105 :ring-buffer-count 256 :ring-buffer-max 256 :mesh-submitted 157 :p2p-direct 210 :peers-targeted 472 :mesh-submit-failed 0 :duplicate-replay 105}
+                                                         :sample-ctl-receipts {:broadcast {:ok true :subnet-id "bip020.test/soak" :route "mesh+p2p" :mesh-submitted true :p2p-direct true :peers-targeted 3}
+                                                                               :dm-bob {:ok true :transport "udp" :route "p2p" :mesh-submitted false :p2p-direct true :peers-targeted 1}
+                                                                               :dm-carol {:ok true :transport "mesh" :route "mesh+p2p" :mesh-submitted true :p2p-direct true :peers-targeted 2}}}}
    :staggered-rolling-restarts-all-6-nodes {:passed? true
                                             :required "staggered rolling restarts across node3->node2->node1 and ns3->ns2->ns1 with clean recovery"
-                                            :restarts [{:order 1 :node :node3 :trigger-min-fin 25 :recovered-ms 46140 :post-fin 55 :recovered? true}
-                                                       {:order 2 :node :node2 :trigger-min-fin 55 :recovered-ms 47176 :post-fin 88 :recovered? true}
-                                                       {:order 3 :node :node1 :trigger-min-fin 88 :recovered-ms 35128 :post-fin 112 :recovered? true}
-                                                       {:order 4 :node :ns3 :trigger-min-fin 112 :recovered-ms 48169 :post-fin 143 :recovered? true}
-                                                       {:order 5 :node :ns2 :trigger-min-fin 141 :recovered-ms 20070 :post-fin 143 :recovered? true}
-                                                       {:order 6 :node :ns1 :trigger-min-fin 143 :recovered-ms 46173 :post-fin 190 :recovered? true}]}
+                                            :restarts [{:order 1 :node :node3 :trigger-min-fin 39 :recovered-ms 34906 :post-fin 62 :recovered? true}
+                                                       {:order 2 :node :node2 :trigger-min-fin 62 :recovered-ms 38920 :post-fin 87 :recovered? true}
+                                                       {:order 3 :node :node1 :trigger-min-fin 92 :recovered-ms 12706 :post-fin 97 :recovered? true}
+                                                       {:order 4 :node :ns3 :trigger-min-fin 97 :recovered-ms 6662 :post-fin 103 :recovered? true}
+                                                       {:order 5 :node :ns2 :trigger-min-fin 103 :recovered-ms 10666 :post-fin 109 :recovered? true}
+                                                       {:order 6 :node :ns1 :trigger-min-fin 109 :recovered-ms 16729 :post-fin 125 :recovered? true}]}
    :events-out-mismatch-test {:passed? true
                               :control-json-has-events-out? true
-                              :control-json-events-out "/tmp/bip020-stage4/light-alice/events.jsonl"
-                              :mismatched-path "/tmp/bip020-stage4/wrong-events-mismatch.jsonl"
+                              :control-json-events-out "/tmp/bip020-stage4-run2/light-alice/events.jsonl"
+                              :mismatched-path "/tmp/bip020-stage4-run2/wrong-events-mismatch.jsonl"
                               :loud-warning-detected? true
-                              :stderr-sample "WARN: events-out-mismatch: wait-event targeting /tmp/bip020-stage4/wrong-events-mismatch.jsonl but daemon control.json has events_out=\"/tmp/bip020-stage4/light-alice/events.jsonl\""}
+                              :stderr-sample "WARN: events-out-mismatch: wait-event targeting /tmp/bip020-stage4-run2/wrong-events-mismatch.jsonl but daemon control.json has events_out=\"/tmp/bip020-stage4-run2/light-alice/events.jsonl\""}
    :ctl-status-pillar-1-4-telemetry {:passed? true
                                      :merged-core-diagnostics? true
                                      :ring-buffer-max 256
-                                     :alice-ring-buffer-count 210
+                                     :alice-ring-buffer-count 256
                                      :pillar-counters-present [:sent :acked :evicted_by_reason :unacked_aged :received_but_not_emitted :fanout]
-                                     :note "Schema and 256-entry ring buffer verified present; see BIP-020-STAGE4-F2 for http-relay sent/fanout counter increment gap."}
+                                     :note "All Pillar 1-4 delivery_telemetry and fanout counters verified truthful on http-relay and P2P transports (BIP-020-STAGE4-F2 resolved)."}
    :resource-bounds {:passed? true
                      :required "Infra RSS <= 200 MiB, 0 HTTP 429 waiter-exhaustion, 0 crashes/OOMs"
-                     :peak-rss-mib {:node1 156.41 :node2 153.61 :node3 154.26 :ns1 158.09 :ns2 155.78 :ns3 155.26}
-                     :max-peak-rss-mib 158.09
+                     :peak-rss-mib {:node1 140.27 :node2 141.5 :node3 140.79 :ns1 146.89 :ns2 145.02 :ns3 146.09}
+                     :max-peak-rss-mib 146.89
                      :http-429-counts {:ns1 0 :ns2 0 :ns3 0 :total 0}
                      :unexpected-exits 0
                      :ooms 0}}
-  :findings
-  [{:id "BIP-020-STAGE4-F1"
-    :severity :critical
-    :component "bitecho-full-node.js (d92d23c3...) / relay-to-relay & validator-bridge subnet broadcast replication"
-    :summary "Mesh-only subscriber carol (on ns3:18406, subscribed to bip020.test/soak) received 52/52 direct mesh DMs (100%) from alice (on ns1:18404) but 0/105 subnet broadcasts (105 silent drops). P2P-connected subscriber bob (on ns2:18405) received 105/105 subnet broadcasts + 105 duplicate_replay via P2P, and alice saw 105 duplicate_replay echoed locally from ns1, demonstrating that subnet broadcasts submitted via /relay/v1/send on ns1 are not replicated to peer relays ns2/ns3 (matching full_node_main.cljs gating replicate-relay-to-peers! on `(and recip (not broadcast?))`)."
-    :recommended-fix "Replicate subnet broadcast envelopes across peer HTTP relays (ns1<->ns2<->ns3) or ensure co-located validator->relay bridge delivers mesh-gossiped subnet broadcasts into every infra-node's local relay broadcast queue without filtering them out."}
-   {:id "BIP-020-STAGE4-F2"
-    :severity :high
-    :component "bitecho-light-node.js (3c07e0af...) / http-relay delivery_telemetry accounting"
-    :summary "On alice (http-relay transport), after 210 ok=true sends (105 subnet broadcasts + 105 direct DMs) with ring_buffer_count=210 and acked=105, ctl status reported delivery_telemetry.sent=0 and fanout={mesh_submitted:0, p2p_direct:0, peers_targeted:0, mesh_submit_failed:0}, and synchronous ctl broadcast/send responses returned status='prepared', pending_delivery=true, mesh_submitted=false, p2p_direct=false."
-    :recommended-fix "Increment delivery_telemetry.sent and fanout.{mesh_submitted,p2p_direct,peers_targeted} when the http-relay and P2P dispatch effects complete, and surface post-dispatch fanout counters accurately in ctl status and command receipts."}]}
+  :findings []}
  :gate-b
  {:verdict :pass
   :started-at "2026-11-23T00:15:28.978Z"
