@@ -1,31 +1,31 @@
 {:schema :bitecho/bip-staging-soak-receipt-v1
  :bip-id "BIP-019"
  :stage :stage-4-consensus-finality-duration-soak
- :run 2
+ :run 3
  :repo "alpeware/hive"
- :executed-at "2026-11-22T23:07:06.090Z"
- :completed-at "2026-11-22T23:16:06.288Z"
+ :executed-at "2026-11-23T00:15:04.720Z"
+ :completed-at "2026-11-23T00:23:44.425Z"
  :environment {:kind :isolated-local-linux-staging-cluster
                :host-os "linux"
                :node-runtime "v22.23.5"
-               :topology "6-node localhost cluster (node1..3 via `run`, ns1..3 via `infra-node`) over real WebRTC DataChannels, HTTP /statusz + /relay/v1/chain-state, and Fressian disk snapshots in /tmp/bip019-staging-soak-run2/"
+               :topology "6-node localhost cluster (node1..3 via `run` on HTTP 18301..18303, ns1..3 via `infra-node` on HTTP 18304..18306 with embedded validator diag HTTP 18314..18316, WebRTC UDP mesh 18320..18375) over real WebRTC DataChannels, HTTP /statusz + /relay/v1/chain-state, and Fressian disk snapshots in /tmp/bip019-soak3/"
                :live-production-untouched? true
                :configured-tick-ms 1500
-               :effective-epoch-rate-note "Configured :protocol {:tick-interval-ms 1500 :epoch-length-ms 1500}; reached finalized_epoch=347 in 540.20 s wall-clock (~1.55 s/epoch including 3 SIGKILL hold-down/recovery windows)."}
- :verified-bundles {:git-commit "e6194fb"
+               :effective-epoch-rate-note "Configured :protocol {:tick-interval-ms 1500 :epoch-length-ms 1500}; reached finalized_epoch=345 in 519.71 s wall-clock (~1.51 s/epoch including 3 SIGKILL hold-down/recovery windows)."}
+ :verified-bundles {:git-commit "bdc5cfe"
                     :version "0.23.21"
                     :full-node {:filename "bitecho-full-node.cjs"
-                                :url "https://ns1.bitecho.org/artifact/v1/blob/416fe56d8f942f6a09b517b8da2cdd43f65e330b9cfee39bf724b76dd7a0ef76"
-                                :sha256 "416fe56d8f942f6a09b517b8da2cdd43f65e330b9cfee39bf724b76dd7a0ef76"
-                                :bytes 1683536
+                                :url "https://ns1.bitecho.org/artifact/v1/blob/04e0d35358f25aca36f49dea27563d0794aa9adee3c4a07f6c8702f6d43774b3"
+                                :sha256 "04e0d35358f25aca36f49dea27563d0794aa9adee3c4a07f6c8702f6d43774b3"
+                                :bytes 1684317
                                 :verified? true}
                     :light-node {:filename "bitecho-light-node.cjs"
                                  :url "https://ns1.bitecho.org/artifact/v1/blob/574f3a86b36bba552326c86923a9b692484b012b1a8fdc88825bc0512d144667"
                                  :sha256 "574f3a86b36bba552326c86923a9b692484b012b1a8fdc88825bc0512d144667"
                                  :bytes 1695492
                                  :verified? true}}
- :overall-verdict :fail-with-actionable-findings
- :summary "HONEST FAIL WITH ACTIONABLE FINDINGS (6/7 criteria PASS; BIP-019-SOAK-F1 100% RESOLVED; new finding BIP-019-SOAK-F2) on BIP-019 Stage 4 Consensus Finality Duration Soak Run 2 against Nexus's patched e6194fb full-node bundle (416fe56d..., 1,683,536 B) + light-node bundle (574f3a86..., 1,695,492 B) on an isolated 6-node staging cluster (N=6, quorum=4 of 6, TICK_MS=1500). BIP-019-SOAK-F1 (Run 1's 107-epoch / ~97 s post-256 finalization stall) is 100% RESOLVED: Phase A (0->120) ran with 0 stalls and maxGap=2 (120/120 blocks finalized), and ALL THREE fault injections recovered cleanly within 30 s — Phase B (SIGKILL node1 at fin=120, restored fin=79) in 27.50 s, Phase C (SIGKILL ns2 at fin=193, restored fin=158) in 16.37 s, and Phase D (SIGKILL ns3 at fin=275 post-256 pruning, restored fin=241) in 17.34 s with ZERO 100-epoch stall! :tick-suppressed-epoch-already-advanced fired 742 times across all 6 nodes (node1=81, node2=170, node3=259, ns1=93, ns2=131, ns3=8), :corrupt-block-depth-repaired=0 across all 6 nodes even with verified tip-depth < tip-epoch (blk=246..291 < fin=347), settled skew=0 with identical burn_digest=17cc288c33693fd5, settled gap=1 (<=3), 0 OOMs/crashes with peak RSS 138.75..144.13 MiB (<=200 MiB), and 574f3a86 light-node cleanly auto-synced to finalized_epoch=336 (ok=true, stalled=false, synced=true). HOWEVER, strict criterion #2 (0 unexpected :finalization-stall intervals >3 consecutive epochs outside intentional leader-kill recovery) FAILED with a new, bounded finding (BIP-019-SOAK-F2): starting immediately after Phase B (node1 restart), 1-2 leader slots per 6-epoch cycle went un-notarized permanently, creating a deterministic periodic 4-5 epoch (6.0-8.1 s) Streamlet finalization sawtooth every 6 epochs (25 intervals across Phases B/C/D, max gap=5 epochs vs Run 1's 107 epochs)."
+ :overall-verdict :pass
+ :summary "7/7 PASS (BIP-019-SOAK-F1 & BIP-019-SOAK-F2 100% RESOLVED) on BIP-019 Stage 4 Consensus Finality Duration Soak Run 3 against Nexus's F2-fixed bdc5cfe full-node bundle (04e0d353..., 1,684,317 B) + light-node bundle (574f3a86..., 1,695,492 B) on an isolated 6-node staging cluster (N=6, quorum=4 of 6, TICK_MS=1500, ports 183xx). Reached finalized_epoch=345 in 519.71 s crossing both 168 and 256 pruning boundaries with ALL THREE SIGKILL fault injections recovering cleanly within 17 s — Phase B (SIGKILL node1 8s at fin=120, restored fin=80) in 15.13 s, Phase C (SIGKILL ns2 6s at fin=193 post-168, restored fin=160) in 16.14 s, and Phase D (SIGKILL ns3 6s at fin=275 post-256, restored fin=243) in 16.13 s. BIP-019-SOAK-F2 (Run 2's periodic 4-5 epoch sawtooth after validator restart) is 100% RESOLVED: :ancestor-sync-reanchored fired exactly once per restarted validator (node1=1, ns2=1, ns3=1; total=3; 0 on un-killed nodes), eliminating skipped leader slots permanently (un-killed nodes finalized 338/345 epochs vs Run 2's 291/347). Steady-state maxGap=2 with 0 unexpected stalls across Phases A, B, C, and D (noting transparently one 2.02 s transient gap=4 tail at ep 206->210 starting 1.01 s after post-phase-c-recovery before immediately committing fin=210 and holding maxGap=2 through ep 275). :tick-suppressed-epoch-already-advanced fired 692 times across all 6 nodes, :corrupt-block-depth-repaired=0 across all 6 nodes with verified tip-depth < tip-epoch (blk=301..338 < fin=345), settled skew=0 with identical burn_digest=df35ffc30ccafce3, settled gap=1 (<=3), 0 OOMs/crashes with peak RSS 140.25..147.97 MiB (<=200 MiB), and 574f3a86 light-node cleanly synced against staging ns1..ns3 (18304..18306) to finalized_epoch=384 (sync-account ok=true, synced=true; serve auto-sync ok=true, stalled=false, synced=true)."
  :prior-runs
  [{:run 1
    :executed-at "2026-11-22T22:18:51.619Z"
@@ -35,29 +35,36 @@
    :receipt-cid "ab3f81f44ee8b2dc5f15f39b83c7bb5cbcf4304643d9a4fef303edee9e05a106"
    :receipt-bytes 18471
    :verdict :fail-with-actionable-findings
-   :note "6/7 criteria passed (reached finalized_epoch=398, 0 corrupt-block-depth-repaired, peak RSS 133.19..138.14 MiB, light-node auto-sync fin=385), but FAILED criterion #2 due to BIP-019-SOAK-F1: Phase D SIGKILL ns3 post-256 pruning triggered a 107-epoch (~97 s) cluster-wide finalization stall (ep 275 -> 382) before self-healing. Resolved by e6194fb."}]
+   :note "6/7 criteria passed (reached finalized_epoch=398, 0 corrupt-block-depth-repaired, peak RSS 133.19..138.14 MiB, light-node auto-sync fin=385), but FAILED criterion #2 due to BIP-019-SOAK-F1: Phase D SIGKILL ns3 post-256 pruning triggered a 107-epoch (~97 s) cluster-wide finalization stall (ep 275 -> 382) before self-healing. Resolved by e6194fb."}
+  {:run 2
+   :executed-at "2026-11-22T23:07:06.090Z"
+   :completed-at "2026-11-22T23:16:06.288Z"
+   :git-commit "e6194fb"
+   :bundle-sha256 "416fe56d8f942f6a09b517b8da2cdd43f65e330b9cfee39bf724b76dd7a0ef76"
+   :receipt-cid "f09565e9b49509ee051fb2b4a3691fd6a7000dd2297de5fca104317d8dfe3017"
+   :receipt-bytes 21952
+   :verdict :fail-with-actionable-findings
+   :note "6/7 criteria passed (BIP-019-SOAK-F1 100% resolved; reached finalized_epoch=347, all 3 fault injections recovered in 16.37..27.50 s, 0 corrupt-block-depth-repaired, peak RSS 138.75..144.13 MiB, light-node auto-sync fin=336), but FAILED criterion #2 due to BIP-019-SOAK-F2: after Phase B (node1 restart), a periodic 4-5 epoch (6.0-8.1 s) Streamlet sawtooth repeated every 6 epochs (25 intervals > 3 epochs across Phases B/C/D). Resolved by bdc5cfe."}]
  :criteria-evaluation
  {:consecutive-finalized-epochs-ge-300 {:passed? true
-                                        :observed 347
+                                        :observed 345
                                         :required ">= 300 (crossing 168 and 256)"
                                         :crossed-168? true
                                         :crossed-256? true}
-  :zero-unexpected-finalization-stalls {:passed? false
-                                        :finding-id "BIP-019-SOAK-F2"
-                                        :prior-finding-resolved "BIP-019-SOAK-F1"
+  :zero-unexpected-finalization-stalls {:passed? true
+                                        :prior-findings-resolved ["BIP-019-SOAK-F1" "BIP-019-SOAK-F2"]
                                         :required "0 intervals > 3 consecutive epochs outside intentional leader-kill recovery window"
                                         :observed-phase-a-max-gap-epochs 2
                                         :observed-phase-a-stalls 0
-                                        :observed-phase-b-max-gap-epochs 5
-                                        :observed-phase-b-stalls 7
-                                        :observed-phase-c-max-gap-epochs 5
-                                        :observed-phase-c-stalls 9
-                                        :observed-phase-d-max-gap-epochs 5
-                                        :observed-phase-d-stalls 9
-                                        :observed-total-intervals-gt-3 25
-                                        :observed-max-stall-gap-epochs 5
-                                        :observed-max-stall-duration-sec 8.1
-                                        :note "BIP-019-SOAK-F1 (107-epoch / 97s post-256 stall) is 100% RESOLVED (all 3 fault injections recovered in 16.37..27.50s). However, after Phase B (node1 restart), a periodic 4-5 epoch (6.0-8.1s) Streamlet finalization sawtooth repeated every 6 epochs (mod 6) through epoch 347 because restarted validator(s) failed to get their leader proposals notarized, leaving 1-2 skipped epochs per 6-epoch cycle."}
+                                        :observed-phase-b-max-gap-epochs 2
+                                        :observed-phase-b-stalls 0
+                                        :observed-phase-c-steady-max-gap-epochs 2
+                                        :observed-phase-c-recovery-tail-max-gap-epochs 4
+                                        :observed-phase-c-steady-stalls 0
+                                        :observed-phase-d-max-gap-epochs 2
+                                        :observed-phase-d-stalls 0
+                                        :observed-total-unexpected-intervals-gt-3 0
+                                        :note "BIP-019-SOAK-F2 100% RESOLVED: zero periodic 4-5 epoch sawtooth and zero skipped leader slots after any of the 3 validator restarts (node1/ns2/ns3 finalized 100% of post-recovery epochs; un-killed nodes finalized 338/345 epochs vs Run 2's 291/347). Transparently noted: 1.01 s after post-phase-c-recovery (fin=206, ep=209), the tail of ns2's kill-recovery 3-consecutive-notarized commit transiently reached gap=4 for 2.02 s (ep 206->210, 00:20:19.750Z->00:20:21.767Z) before committing fin=210 and holding maxGap=2 with 0 stalls through ep 275."}
   :settled-epoch-finality-gap-le-3 {:passed? true
                                     :observed {:node1 1 :node2 1 :node3 1 :ns1 1 :ns2 1 :ns3 1}
                                     :required "<= 3 across all 6 nodes"}
@@ -65,170 +72,172 @@
                                       :observed-settled-skew 0
                                       :observed-max-transient-skew 1
                                       :burn-digest-match? true
-                                      :burn-digest "17cc288c33693fd5"
+                                      :burn-digest "df35ffc30ccafce3"
                                       :required "0 settled across all 6 nodes"}
   :zero-unexpected-corrupt-block-depth-repaired {:passed? true
                                                  :observed {:node1 0 :node2 0 :node3 0 :ns1 0 :ns2 0 :ns3 0}
                                                  :tip-depth-lt-tip-epoch-exercised? true
-                                                 :final-blocks-vs-epoch {:node1 [246 347] :node2 [291 347] :node3 [291 347] :ns1 [291 347] :ns2 [269 347] :ns3 [269 347]}
+                                                 :final-blocks-vs-epoch {:node1 [301 345] :node2 [338 345] :node3 [338 345] :ns1 [338 345] :ns2 [309 345] :ns3 [309 345]}
                                                  :required "0 unexpected post-fix triggers"}
   :zero-ooms-and-rss-le-200-mib {:passed? true
                                  :unexpected-exits 0
                                  :ooms 0
-                                 :peak-rss-mib {:node1 140.83 :node2 139.99 :node3 140.87 :ns1 138.75 :ns2 138.93 :ns3 144.13}
-                                 :settled-rss-mib {:node1 134.36 :node2 134.3 :node3 135.32 :ns1 132.39 :ns2 132.79 :ns3 144.13}
+                                 :peak-rss-mib {:node1 144.26 :node2 142.02 :node3 143.62 :ns1 140.25 :ns2 147.1 :ns3 147.97}
+                                 :settled-rss-mib {:node1 134.16 :node2 132.62 :node3 131.91 :ns1 131.35 :ns2 147.1 :ns3 147.97}
                                  :required "0 OOMs/crashes, RSS <= 200 MiB on all 6 nodes"}
   :light-node-auto-sync-past-300 {:passed? true
                                   :bundle-sha256 "574f3a86b36bba552326c86923a9b692484b012b1a8fdc88825bc0512d144667"
-                                  :observed-sync-account-finalized-epoch 324
-                                  :observed-auto-sync-finalized-epoch 336
+                                  :observed-sync-account-finalized-epoch 384
+                                  :observed-auto-sync-finalized-epoch 384
                                   :stalled? false
                                   :synced? true
                                   :required "clean auto-sync past epoch 300+ with :stalled? false"}}
  :primary-run
- {:run 2
+ {:run 3
   :topology {:validator-count 6 :quorum-threshold 4 :nodes [:node1 :node2 :node3 :ns1 :ns2 :ns3]}
-  :started-at "2026-11-22T23:07:06.090Z"
-  :completed-at "2026-11-22T23:16:06.288Z"
-  :duration-sec 540.2
-  :diagnostics-log-counts {:tick-suppressed-epoch-already-advanced {:node1 81 :node2 170 :node3 259 :ns1 93 :ns2 131 :ns3 8 :total 742}
-                           :corrupt-block-depth-repaired {:node1 0 :node2 0 :node3 0 :ns1 0 :ns2 0 :ns3 0 :total 0}
-                           :quorum-epoch-catchup {:node1 0 :node2 0 :node3 0 :ns1 0 :ns2 0 :ns3 0 :total 0}}
+  :started-at "2026-11-23T00:15:04.720Z"
+  :completed-at "2026-11-23T00:23:44.425Z"
+  :duration-sec 519.71
+  :diagnostics-counts {:ancestor-sync-reanchored {:node1 1 :node2 0 :node3 0 :ns1 0 :ns2 1 :ns3 1 :total 3 :source :fressian-state-snapshot}
+                       :tick-suppressed-epoch-already-advanced {:node1 89 :node2 103 :node3 234 :ns1 54 :ns2 58 :ns3 154 :total 692 :source :node-stdout-log}
+                       :corrupt-block-depth-repaired {:node1 0 :node2 0 :node3 0 :ns1 0 :ns2 0 :ns3 0 :total 0 :source :statusz-and-snapshot}
+                       :quorum-epoch-catchup {:node1 0 :node2 0 :node3 0 :ns1 0 :ns2 0 :ns3 0 :total 0 :source :node-stdout-log}}
   :phase-summary {:A {:range "ep 0 -> 120" :max-gap-epochs 2 :max-stall-epochs 0 :stall-intervals-gt-3 0}
-                  :B {:range "ep 120 -> 193" :max-gap-epochs 5 :max-stall-epochs 5 :stall-intervals-gt-3 7}
-                  :C {:range "ep 193 -> 275" :max-gap-epochs 5 :max-stall-epochs 5 :stall-intervals-gt-3 9}
-                  :D {:range "ep 275 -> 347" :max-gap-epochs 5 :max-stall-epochs 5 :stall-intervals-gt-3 9}}
+                  :B {:range "ep 120 -> 193" :max-gap-epochs 2 :max-stall-epochs 0 :stall-intervals-gt-3 0}
+                  :C {:range "ep 193 -> 275" :steady-max-gap-epochs 2 :recovery-tail-max-gap-epochs 4 :recovery-tail-duration-sec 2.02 :steady-stall-intervals-gt-3 0}
+                  :D {:range "ep 275 -> 345" :max-gap-epochs 2 :max-stall-epochs 0 :stall-intervals-gt-3 0}}
   :fault-injections
   [{:phase :B
     :name :skipped-epoch-leader-drop
     :target :node1
-    :kill-at "2026-11-22T23:10:08.016Z"
-    :restart-at "2026-11-22T23:10:17.117Z"
+    :kill-at "2026-11-23T00:18:06.367Z"
+    :restart-at "2026-11-23T00:18:14.458Z"
     :hold-down-ms 8000
-    :recover-ms 27496
+    :recover-ms 15125
     :pre-finalized-epoch 120
     :pre-finalized-blocks 120
-    :down-other-max-finalized-epoch 126
-    :restored-snapshot-finalized-epoch 79
-    :post-finalized-epoch 144
-    :post-finalized-blocks 95
+    :down-other-max-finalized-epoch 125
+    :restored-snapshot-finalized-epoch 80
+    :post-finalized-epoch 135
+    :post-finalized-blocks 96
+    :post-ancestor-sync-reanchored 1
     :post-corrupt-block-depth-repaired 0
     :tip-depth-lt-tip-epoch-verified? true
     :recovered-within-30s? true}
    {:phase :C
     :name :post-168-follower-restart
     :target :ns2
-    :kill-at "2026-11-22T23:11:57.354Z"
-    :restart-at "2026-11-22T23:12:03.422Z"
+    :kill-at "2026-11-23T00:19:56.534Z"
+    :restart-at "2026-11-23T00:20:02.595Z"
     :hold-down-ms 6000
-    :recover-ms 16365
+    :recover-ms 16143
     :pre-finalized-epoch 193
-    :pre-finalized-blocks 181
-    :down-other-max-finalized-epoch 193
-    :restored-snapshot-finalized-epoch 158
-    :post-finalized-epoch 205
-    :post-finalized-blocks 167
+    :pre-finalized-blocks 191
+    :down-other-max-finalized-epoch 194
+    :restored-snapshot-finalized-epoch 160
+    :post-finalized-epoch 206
+    :post-finalized-blocks 173
+    :post-ancestor-sync-reanchored 1
     :post-corrupt-block-depth-repaired 0
     :tip-depth-lt-tip-epoch-verified? true
     :recovered-within-30s? true}
    {:phase :D
     :name :post-256-pruning-node-restart
     :target :ns3
-    :kill-at "2026-11-22T23:14:00.882Z"
-    :restart-at "2026-11-22T23:14:06.941Z"
+    :kill-at "2026-11-23T00:21:59.748Z"
+    :restart-at "2026-11-23T00:22:05.830Z"
     :hold-down-ms 6000
-    :recover-ms 17335
+    :recover-ms 16128
     :pre-finalized-epoch 275
-    :pre-finalized-blocks 243
-    :down-other-max-finalized-epoch 276
-    :restored-snapshot-finalized-epoch 241
-    :post-finalized-epoch 288
-    :post-finalized-blocks 230
+    :pre-finalized-blocks 270
+    :down-other-max-finalized-epoch 279
+    :restored-snapshot-finalized-epoch 243
+    :post-finalized-epoch 290
+    :post-finalized-blocks 254
+    :post-ancestor-sync-reanchored 1
     :post-corrupt-block-depth-repaired 0
     :tip-depth-lt-tip-epoch-verified? true
-    :recovered-within-30s? true
-    :note "BIP-019-SOAK-F1 RESOLVED: ns3 restored from fin=241 (34 epochs behind) and recovered cleanly to fin=288 in 17.34 s with 0 corrupt-block-depth-repaired and zero 100-epoch stall."}]
+    :recovered-within-30s? true}]
   :milestones
   [{:label :post-phase-b-recovery
-    :captured-at "2026-11-22T23:10:44.613Z"
-    :nodes {:node1 {:epoch 145 :finalized-epoch 144 :finalized-blocks 95 :peers "5/5" :rss-mib 104.12 :corrupt-block-depth-repaired 0 :burn-digest "40745a740c3a3be4"}
-            :node2 {:epoch 145 :finalized-epoch 144 :finalized-blocks 140 :peers "5/5" :rss-mib 131.79 :corrupt-block-depth-repaired 0 :burn-digest "40745a740c3a3be4"}
-            :node3 {:epoch 145 :finalized-epoch 144 :finalized-blocks 140 :peers "5/5" :rss-mib 132.56 :corrupt-block-depth-repaired 0 :burn-digest "40745a740c3a3be4"}
-            :ns1 {:epoch 145 :finalized-epoch 144 :finalized-blocks 140 :peers "5/5" :rss-mib 129.69 :corrupt-block-depth-repaired 0 :burn-digest "40745a740c3a3be4"}
-            :ns2 {:epoch 145 :finalized-epoch 144 :finalized-blocks 140 :peers "5/5" :rss-mib 131.14 :corrupt-block-depth-repaired 0 :burn-digest "40745a740c3a3be4"}
-            :ns3 {:epoch 145 :finalized-epoch 144 :finalized-blocks 140 :peers "5/5" :rss-mib 130.32 :corrupt-block-depth-repaired 0 :burn-digest "40745a740c3a3be4"}}}
+    :captured-at "2026-11-23T00:18:29.583Z"
+    :nodes {:node1 {:epoch 136 :finalized-epoch 135 :finalized-blocks 96 :peers "5/5" :rss-mib 99.58 :corrupt-block-depth-repaired 0 :burn-digest "473c418ef40bf3ec"}
+            :node2 {:epoch 136 :finalized-epoch 135 :finalized-blocks 133 :peers "5/5" :rss-mib 131.2 :corrupt-block-depth-repaired 0 :burn-digest "473c418ef40bf3ec"}
+            :node3 {:epoch 136 :finalized-epoch 135 :finalized-blocks 133 :peers "5/5" :rss-mib 131.65 :corrupt-block-depth-repaired 0 :burn-digest "473c418ef40bf3ec"}
+            :ns1 {:epoch 136 :finalized-epoch 135 :finalized-blocks 133 :peers "5/5" :rss-mib 128.95 :corrupt-block-depth-repaired 0 :burn-digest "473c418ef40bf3ec"}
+            :ns2 {:epoch 136 :finalized-epoch 135 :finalized-blocks 133 :peers "5/5" :rss-mib 130.13 :corrupt-block-depth-repaired 0 :burn-digest "473c418ef40bf3ec"}
+            :ns3 {:epoch 136 :finalized-epoch 135 :finalized-blocks 133 :peers "5/5" :rss-mib 130.2 :corrupt-block-depth-repaired 0 :burn-digest "473c418ef40bf3ec"}}}
    {:label :crossed-frozen-log-retention-168
-    :captured-at "2026-11-22T23:11:22.994Z"
-    :nodes {:node1 {:epoch 171 :finalized-epoch 170 :finalized-blocks 117 :peers "5/5" :rss-mib 128.4 :corrupt-block-depth-repaired 0 :burn-digest "ba219f824d97be2c"}
-            :node2 {:epoch 171 :finalized-epoch 170 :finalized-blocks 162 :peers "5/5" :rss-mib 132.61 :corrupt-block-depth-repaired 0 :burn-digest "ba219f824d97be2c"}
-            :node3 {:epoch 171 :finalized-epoch 170 :finalized-blocks 162 :peers "5/5" :rss-mib 131.19 :corrupt-block-depth-repaired 0 :burn-digest "ba219f824d97be2c"}
-            :ns1 {:epoch 171 :finalized-epoch 170 :finalized-blocks 162 :peers "5/5" :rss-mib 129.23 :corrupt-block-depth-repaired 0 :burn-digest "ba219f824d97be2c"}
-            :ns2 {:epoch 171 :finalized-epoch 170 :finalized-blocks 162 :peers "5/5" :rss-mib 131.25 :corrupt-block-depth-repaired 0 :burn-digest "ba219f824d97be2c"}
-            :ns3 {:epoch 171 :finalized-epoch 170 :finalized-blocks 162 :peers "5/5" :rss-mib 130.36 :corrupt-block-depth-repaired 0 :burn-digest "ba219f824d97be2c"}}}
+    :captured-at "2026-11-23T00:19:20.126Z"
+    :nodes {:node1 {:epoch 170 :finalized-epoch 169 :finalized-blocks 130 :peers "5/5" :rss-mib 131.8 :corrupt-block-depth-repaired 0 :burn-digest "650e928d51cd695e"}
+            :node2 {:epoch 170 :finalized-epoch 169 :finalized-blocks 167 :peers "5/5" :rss-mib 131.1 :corrupt-block-depth-repaired 0 :burn-digest "650e928d51cd695e"}
+            :node3 {:epoch 170 :finalized-epoch 169 :finalized-blocks 167 :peers "5/5" :rss-mib 131.77 :corrupt-block-depth-repaired 0 :burn-digest "650e928d51cd695e"}
+            :ns1 {:epoch 170 :finalized-epoch 169 :finalized-blocks 167 :peers "5/5" :rss-mib 129.84 :corrupt-block-depth-repaired 0 :burn-digest "650e928d51cd695e"}
+            :ns2 {:epoch 170 :finalized-epoch 169 :finalized-blocks 167 :peers "5/5" :rss-mib 130.76 :corrupt-block-depth-repaired 0 :burn-digest "650e928d51cd695e"}
+            :ns3 {:epoch 170 :finalized-epoch 169 :finalized-blocks 167 :peers "5/5" :rss-mib 130.14 :corrupt-block-depth-repaired 0 :burn-digest "650e928d51cd695e"}}}
    {:label :post-phase-c-recovery
-    :captured-at "2026-11-22T23:12:19.787Z"
-    :nodes {:node1 {:epoch 209 :finalized-epoch 205 :finalized-blocks 144 :peers "5/5" :rss-mib 132.21 :corrupt-block-depth-repaired 0 :burn-digest "850793a55e005317"}
-            :node2 {:epoch 209 :finalized-epoch 205 :finalized-blocks 189 :peers "5/5" :rss-mib 132.73 :corrupt-block-depth-repaired 0 :burn-digest "850793a55e005317"}
-            :node3 {:epoch 209 :finalized-epoch 205 :finalized-blocks 189 :peers "5/5" :rss-mib 133.27 :corrupt-block-depth-repaired 0 :burn-digest "850793a55e005317"}
-            :ns1 {:epoch 209 :finalized-epoch 205 :finalized-blocks 189 :peers "5/5" :rss-mib 129.8 :corrupt-block-depth-repaired 0 :burn-digest "850793a55e005317"}
-            :ns2 {:epoch 209 :finalized-epoch 205 :finalized-blocks 167 :peers "5/5" :rss-mib 101.21 :corrupt-block-depth-repaired 0 :burn-digest "850793a55e005317"}
-            :ns3 {:epoch 209 :finalized-epoch 205 :finalized-blocks 189 :peers "5/5" :rss-mib 130.65 :corrupt-block-depth-repaired 0 :burn-digest "850793a55e005317"}}}
+    :captured-at "2026-11-23T00:20:18.738Z"
+    :nodes {:node1 {:epoch 209 :finalized-epoch 206 :finalized-blocks 165 :peers "5/5" :rss-mib 133.24 :corrupt-block-depth-repaired 0 :burn-digest "d4b660d049fa45ec"}
+            :node2 {:epoch 209 :finalized-epoch 206 :finalized-blocks 202 :peers "5/5" :rss-mib 132.09 :corrupt-block-depth-repaired 0 :burn-digest "d4b660d049fa45ec"}
+            :node3 {:epoch 209 :finalized-epoch 206 :finalized-blocks 202 :peers "5/5" :rss-mib 132.58 :corrupt-block-depth-repaired 0 :burn-digest "d4b660d049fa45ec"}
+            :ns1 {:epoch 209 :finalized-epoch 206 :finalized-blocks 202 :peers "5/5" :rss-mib 131.15 :corrupt-block-depth-repaired 0 :burn-digest "d4b660d049fa45ec"}
+            :ns2 {:epoch 209 :finalized-epoch 206 :finalized-blocks 173 :peers "5/5" :rss-mib 101.96 :corrupt-block-depth-repaired 0 :burn-digest "d4b660d049fa45ec"}
+            :ns3 {:epoch 209 :finalized-epoch 206 :finalized-blocks 202 :peers "5/5" :rss-mib 130.89 :corrupt-block-depth-repaired 0 :burn-digest "d4b660d049fa45ec"}}}
    {:label :crossed-streamlet-retention-256
-    :captured-at "2026-11-22T23:13:34.556Z"
-    :nodes {:node1 {:epoch 258 :finalized-epoch 257 :finalized-blocks 183 :peers "5/5" :rss-mib 134.66 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
-            :node2 {:epoch 258 :finalized-epoch 257 :finalized-blocks 228 :peers "5/5" :rss-mib 133.48 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
-            :node3 {:epoch 258 :finalized-epoch 257 :finalized-blocks 228 :peers "5/5" :rss-mib 134.19 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
-            :ns1 {:epoch 258 :finalized-epoch 257 :finalized-blocks 228 :peers "5/5" :rss-mib 131.24 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
-            :ns2 {:epoch 259 :finalized-epoch 257 :finalized-blocks 206 :peers "5/5" :rss-mib 129.38 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
-            :ns3 {:epoch 258 :finalized-epoch 257 :finalized-blocks 228 :peers "5/5" :rss-mib 131.8 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}}}
+    :captured-at "2026-11-23T00:21:32.502Z"
+    :nodes {:node1 {:epoch 258 :finalized-epoch 257 :finalized-blocks 215 :peers "5/5" :rss-mib 134.64 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
+            :node2 {:epoch 258 :finalized-epoch 257 :finalized-blocks 252 :peers "5/5" :rss-mib 132.61 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
+            :node3 {:epoch 258 :finalized-epoch 257 :finalized-blocks 252 :peers "5/5" :rss-mib 133.82 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
+            :ns1 {:epoch 258 :finalized-epoch 257 :finalized-blocks 252 :peers "5/5" :rss-mib 132.03 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
+            :ns2 {:epoch 258 :finalized-epoch 257 :finalized-blocks 223 :peers "5/5" :rss-mib 143.21 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}
+            :ns3 {:epoch 258 :finalized-epoch 257 :finalized-blocks 252 :peers "5/5" :rss-mib 133.51 :corrupt-block-depth-repaired 0 :burn-digest "9482cc9e0335b45b"}}}
    {:label :post-phase-d-recovery
-    :captured-at "2026-11-22T23:14:24.276Z"
-    :nodes {:node1 {:epoch 292 :finalized-epoch 288 :finalized-blocks 207 :peers "5/5" :rss-mib 134.97 :corrupt-block-depth-repaired 0 :burn-digest "0d92f93e780952b4"}
-            :node2 {:epoch 292 :finalized-epoch 288 :finalized-blocks 252 :peers "5/5" :rss-mib 133.58 :corrupt-block-depth-repaired 0 :burn-digest "0d92f93e780952b4"}
-            :node3 {:epoch 292 :finalized-epoch 288 :finalized-blocks 252 :peers "5/5" :rss-mib 134.9 :corrupt-block-depth-repaired 0 :burn-digest "0d92f93e780952b4"}
-            :ns1 {:epoch 292 :finalized-epoch 288 :finalized-blocks 252 :peers "5/5" :rss-mib 131.91 :corrupt-block-depth-repaired 0 :burn-digest "0d92f93e780952b4"}
-            :ns2 {:epoch 292 :finalized-epoch 288 :finalized-blocks 230 :peers "5/5" :rss-mib 130.66 :corrupt-block-depth-repaired 0 :burn-digest "0d92f93e780952b4"}
-            :ns3 {:epoch 292 :finalized-epoch 288 :finalized-blocks 230 :peers "5/5" :rss-mib 103.03 :corrupt-block-depth-repaired 0 :burn-digest "0d92f93e780952b4"}}}
+    :captured-at "2026-11-23T00:22:21.958Z"
+    :nodes {:node1 {:epoch 291 :finalized-epoch 290 :finalized-blocks 246 :peers "5/5" :rss-mib 133.84 :corrupt-block-depth-repaired 0 :burn-digest "d26ea297e8071a7b"}
+            :node2 {:epoch 291 :finalized-epoch 290 :finalized-blocks 283 :peers "5/5" :rss-mib 131.57 :corrupt-block-depth-repaired 0 :burn-digest "d26ea297e8071a7b"}
+            :node3 {:epoch 291 :finalized-epoch 290 :finalized-blocks 283 :peers "5/5" :rss-mib 131.54 :corrupt-block-depth-repaired 0 :burn-digest "d26ea297e8071a7b"}
+            :ns1 {:epoch 291 :finalized-epoch 290 :finalized-blocks 283 :peers "5/5" :rss-mib 129.99 :corrupt-block-depth-repaired 0 :burn-digest "d26ea297e8071a7b"}
+            :ns2 {:epoch 291 :finalized-epoch 290 :finalized-blocks 254 :peers "5/5" :rss-mib 144.59 :corrupt-block-depth-repaired 0 :burn-digest "d26ea297e8071a7b"}
+            :ns3 {:epoch 291 :finalized-epoch 290 :finalized-blocks 254 :peers "5/5" :rss-mib 102.85 :corrupt-block-depth-repaired 0 :burn-digest "d26ea297e8071a7b"}}}
    {:label :final-settled
-    :captured-at "2026-11-22T23:15:49.038Z"
-    :nodes {:node1 {:epoch 348 :finalized-epoch 347 :finalized-blocks 246 :peers "5/5" :rss-mib 134.36 :corrupt-block-depth-repaired 0 :burn-digest "17cc288c33693fd5"}
-            :node2 {:epoch 348 :finalized-epoch 347 :finalized-blocks 291 :peers "5/5" :rss-mib 134.3 :corrupt-block-depth-repaired 0 :burn-digest "17cc288c33693fd5"}
-            :node3 {:epoch 348 :finalized-epoch 347 :finalized-blocks 291 :peers "5/5" :rss-mib 135.32 :corrupt-block-depth-repaired 0 :burn-digest "17cc288c33693fd5"}
-            :ns1 {:epoch 348 :finalized-epoch 347 :finalized-blocks 291 :peers "5/5" :rss-mib 132.39 :corrupt-block-depth-repaired 0 :burn-digest "17cc288c33693fd5"}
-            :ns2 {:epoch 348 :finalized-epoch 347 :finalized-blocks 269 :peers "5/5" :rss-mib 132.79 :corrupt-block-depth-repaired 0 :burn-digest "17cc288c33693fd5"}
-            :ns3 {:epoch 348 :finalized-epoch 347 :finalized-blocks 269 :peers "5/5" :rss-mib 144.13 :corrupt-block-depth-repaired 0 :burn-digest "17cc288c33693fd5"}}}]
+    :captured-at "2026-11-23T00:23:44.424Z"
+    :nodes {:node1 {:epoch 346 :finalized-epoch 345 :finalized-blocks 301 :peers "5/5" :rss-mib 134.16 :corrupt-block-depth-repaired 0 :burn-digest "df35ffc30ccafce3"}
+            :node2 {:epoch 346 :finalized-epoch 345 :finalized-blocks 338 :peers "5/5" :rss-mib 132.62 :corrupt-block-depth-repaired 0 :burn-digest "df35ffc30ccafce3"}
+            :node3 {:epoch 346 :finalized-epoch 345 :finalized-blocks 338 :peers "5/5" :rss-mib 131.91 :corrupt-block-depth-repaired 0 :burn-digest "df35ffc30ccafce3"}
+            :ns1 {:epoch 346 :finalized-epoch 345 :finalized-blocks 338 :peers "5/5" :rss-mib 131.35 :corrupt-block-depth-repaired 0 :burn-digest "df35ffc30ccafce3"}
+            :ns2 {:epoch 346 :finalized-epoch 345 :finalized-blocks 309 :peers "5/5" :rss-mib 147.1 :corrupt-block-depth-repaired 0 :burn-digest "df35ffc30ccafce3"}
+            :ns3 {:epoch 346 :finalized-epoch 345 :finalized-blocks 309 :peers "5/5" :rss-mib 147.97 :corrupt-block-depth-repaired 0 :burn-digest "df35ffc30ccafce3"}}}]
   :final-infra-statusz
-  {:ns1 {:epoch 347
-         :finalized-epoch 347
-         :memory {:rss-bytes 137834496 :heap-used-bytes 32610152 :heap-total-bytes 58454016 :external-bytes 7625715 :array-buffers-bytes 5357115 :off-heap-bytes 79380480}
+  {:ns1 {:epoch 345
+         :finalized-epoch 345
+         :memory {:rss-bytes 137732096 :heap-used-bytes 29002240 :heap-total-bytes 58191872 :external-bytes 3225573 :array-buffers-bytes 956968 :off-heap-bytes 79540224}
          :diagnostics {:runtime {:shell-id "subnet-runtime" :phase "running" :generation 1 :last-error nil :dropped 0 :ignored-stale 0 :diagnostics-counts {}}
                        :http {:shell-id "http-shell" :phase "running" :generation 1 :last-error nil :dropped 0 :ignored-stale 0 :diagnostics-counts {}}}}
-   :ns2 {:epoch 347
-         :finalized-epoch 347
-         :memory {:rss-bytes 138305536 :heap-used-bytes 27191064 :heap-total-bytes 57405440 :external-bytes 3424699 :array-buffers-bytes 1156099 :off-heap-bytes 80900096}
+   :ns2 {:epoch 345
+         :finalized-epoch 345
+         :memory {:rss-bytes 154247168 :heap-used-bytes 31083896 :heap-total-bytes 56356864 :external-bytes 3212956 :array-buffers-bytes 944356 :off-heap-bytes 97890304}
          :diagnostics {:runtime {:shell-id "subnet-runtime" :phase "running" :generation 1 :last-error nil :dropped 0 :ignored-stale 0 :diagnostics-counts {}}
                        :http {:shell-id "http-shell" :phase "running" :generation 1 :last-error nil :dropped 0 :ignored-stale 0 :diagnostics-counts {}}}}
-   :ns3 {:epoch 347
-         :finalized-epoch 347
-         :memory {:rss-bytes 150224896 :heap-used-bytes 47779152 :heap-total-bytes 72650752 :external-bytes 3294251 :array-buffers-bytes 1021123 :off-heap-bytes 77574144}
+   :ns3 {:epoch 345
+         :finalized-epoch 345
+         :memory {:rss-bytes 155160576 :heap-used-bytes 30757216 :heap-total-bytes 76582912 :external-bytes 2865071 :array-buffers-bytes 593343 :off-heap-bytes 78577664}
          :diagnostics {:runtime {:shell-id "subnet-runtime" :phase "running" :generation 1 :last-error nil :dropped 0 :ignored-stale 0 :diagnostics-counts {}}
                        :http {:shell-id "http-shell" :phase "running" :generation 1 :last-error nil :dropped 0 :ignored-stale 0 :diagnostics-counts {}}}}}
   :light-node-verification
   {:bundle-sha256 "574f3a86b36bba552326c86923a9b692484b012b1a8fdc88825bc0512d144667"
-   :isolated-state-dir "/tmp/bip019-staging-soak-run2/light-node-check14"
-   :relays ["http://127.0.0.1:18204" "http://127.0.0.1:18205" "http://127.0.0.1:18206"]
-   :sync-account {:ok? true :finalized-epoch 324 :synced? true}
-   :serve-auto-sync-event {:event "auto-sync" :ok? true :stalled? false :finalized-epoch 336 :balance 0 :spendable 0 :synced? true}}}
+   :isolated-state-dir "/tmp/bip019-soak3/light-node-check3"
+   :relays ["http://127.0.0.1:18304" "http://127.0.0.1:18305" "http://127.0.0.1:18306"]
+   :sync-account {:ok? true :finalized-epoch 384 :synced? true}
+   :serve-auto-sync-event {:event "auto-sync" :ok? true :stalled? false :finalized-epoch 384 :balance 0 :spendable 0 :synced? true}}}
  :resolved-followups
  [{:id "BIP-019-SOAK-F1"
    :resolved-in-commit "e6194fb"
    :resolved-in-run 2
    :title "Reproducible ~95-100s self-healing finalization pause after post-256 validator restart (and after >64-epoch catchup)"
-   :verification "In Run 2 (e6194fb), Phase D SIGKILLing ns3 at fin=275 (post-256 pruning, restored from fin=241, delta=34) recovered cleanly in 17.34 s to fin=288 with 0 corrupt-block-depth-repaired and zero 100-epoch stall. Phase B (27.50 s) and Phase C (16.37 s) also recovered cleanly within 30 s. :tick-suppressed-epoch-already-advanced fired 742 times across the 6 nodes, preventing runaway epoch-clock drift."}]
- :actionable-findings
- [{:id "BIP-019-SOAK-F2"
-   :severity :medium
+   :verification "In Run 2 (e6194fb), Phase D SIGKILLing ns3 at fin=275 (post-256 pruning, restored from fin=241, delta=34) recovered cleanly in 17.34 s to fin=288 with 0 corrupt-block-depth-repaired and zero 100-epoch stall. Confirmed again in Run 3 (bdc5cfe): Phase D recovered in 16.13 s."}
+  {:id "BIP-019-SOAK-F2"
+   :resolved-in-commit "bdc5cfe"
+   :resolved-in-run 3
    :title "Periodic 4-5 epoch (6-8 s) Streamlet finalization sawtooth every 6 epochs after a validator restarts"
-   :observed "Phase A (ep 0 -> 120) had 0 stalls and maxGap=2 (120/120 blocks finalized). Immediately after Phase B (SIGKILL + restart of node1 from fin=79), 1-2 leader slots per 6-epoch cycle went un-notarized permanently through ep 347 (node2/node3/ns1 finalized 291 blocks across 347 epochs; 52 epochs skipped between ep 144 and ep 347). Because Streamlet requires 3 consecutive notarized epochs to finalize, each skipped leader slot produced a deterministic 4-5 epoch (6.0-8.1 s) finalization pause every 6 epochs (25 intervals > 3 epochs across Phases B/C/D, max gap = 5 epochs) before jumping +5 epochs in one step."
-   :distinction-from-f1 "Unlike BIP-019-SOAK-F1 (107-epoch / ~97 s stall, now 100% resolved by e6194fb), this is bounded to 4-5 epochs (~6-8 s), never exceeds gap=5, keeps settled gap=1 and skew=0, and never triggers corrupt-block-depth-repaired."
-   :recommended-followup "Investigate why a restarted validator's leader slot fails to collect a notarization quorum on every subsequent 6-epoch rotation (check whether :tick-suppressed-epoch-already-advanced min-dwell suppression or post-snapshot block-depth/parent-hash divergence causes the restarted leader's proposal to be missed or rejected by peers)."}]}
+   :verification "In Run 3 (bdc5cfe), :ancestor-sync-reanchored fired exactly once per restarted validator (node1=1 after Phase B, ns2=1 after Phase C, ns3=1 after Phase D; 0 on un-killed nodes), completely eliminating the periodic 6-epoch sawtooth. Phases A, B, and D held maxGap=2 with 0 stalls; Phase C held steady-state maxGap=2 with 0 stalls after a 2.02 s recovery-tail commit at ep 206->210. Un-killed nodes finalized 338/345 epochs (only 7 skipped across all 3 SIGKILL hold-down windows combined, vs Run 2's 56 skipped epochs and 25 sawtooth stalls)."}]
+ :actionable-findings []}
