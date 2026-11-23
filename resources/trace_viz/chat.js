@@ -1685,7 +1685,7 @@ async function connectNode() {
   try {
     node = api;
     const initOpts = {
-      subnetId: "bitecho.org/dev",
+      subnetId: "devnet.bitecho.org",
       relayUrls: [
         "https://ns1.bitecho.org",
         "https://ns2.bitecho.org",
@@ -2159,7 +2159,7 @@ if (globalThis.BitechoBrowser) {
   const b = globalThis.BitechoBrowser;
   if (b.initNode) {
     b.initNode({
-      subnetId: "bitecho.org/dev",
+      subnetId: "devnet.bitecho.org",
       relayUrls: [
         "https://ns1.bitecho.org",
         "https://ns2.bitecho.org",
