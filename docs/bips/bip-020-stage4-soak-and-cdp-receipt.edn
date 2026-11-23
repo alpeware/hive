@@ -1,0 +1,210 @@
+{:schema :bitecho/bip-stage4-soak-and-cdp-receipt-v1
+ :bip-id "BIP-020"
+ :stage :stage-4-soak-and-chrome-cdp-e2e
+ :run 2
+ :branch "bip-020-hive-ui-parity"
+ :hive-ui-commit "86a11c3cceada4da977d7e92b87fc137f7494a60"
+ :repo "alpeware/hive"
+ :executed-at "2026-11-23T01:17:23.785Z"
+ :completed-at "2026-11-23T01:21:06.619Z"
+ :environment {:host-os "linux"
+               :node-runtime "v22.23.5"
+               :chrome-version "Chrome/156.0.8078.47"
+               :isolation {:staging-cluster-dir "/tmp/bip020-stage4-run2/"
+                           :staging-http-ports [18401 18402 18403 18404 18405 18406]
+                           :staging-diag-ports [18401 18402 18403 18484 18485 18486]
+                           :staging-mesh-base-ports [18410 18420 18430 18440 18450 18460]
+                           :light-node-control-ports [18471 18472 18473]
+                           :light-node-p2p-ingress-ports [18475 18476]
+                           :static-web-port 18480
+                           :chrome-cdp-port 18492
+                           :live-production-state-untouched? true}}
+ :verified-bundles {:git-commit "0c3958e"
+                    :version "0.23.21"
+                    :full-node {:filename "bitecho-full-node.js"
+                                :url "https://ns1.bitecho.org/artifact/v1/blob/bacb278bf916bc08a0aaa6e782a4b4e10741513305d1cad051c72349cf00f67a"
+                                :sha256 "bacb278bf916bc08a0aaa6e782a4b4e10741513305d1cad051c72349cf00f67a"
+                                :bytes 1685423
+                                :verified? true}
+                    :light-node {:filename "bitecho-light-node.js"
+                                 :url "https://ns1.bitecho.org/artifact/v1/blob/4daafab057174170c3ffd8376c39210d14f81248374d13e20edade5721f2db9b"
+                                 :sha256 "4daafab057174170c3ffd8376c39210d14f81248374d13e20edade5721f2db9b"
+                                 :bytes 1712152
+                                 :verified? true}
+                    :browser {:filename "bitecho-browser.js"
+                              :url "https://ns1.bitecho.org/artifact/v1/blob/21cbcdbac1aad9ebeb0ac5ba5d5389808b88790856c8935951979871a8105508"
+                              :sha256 "21cbcdbac1aad9ebeb0ac5ba5d5389808b88790856c8935951979871a8105508"
+                              :bytes 1633099
+                              :sri "sha384-WRPMyemj6CDuOsW+HPon/7yPEmXQxs0Y/ilgxom8/ovv41QH0o1B8KegrG8LB5IR"
+                              :verified? true
+                              :note "Unchanged from Run 1; Gate B Chrome/156 CDP E2E remains 100% PASS."}}
+ :overall-verdict :pass
+ :gate-verdicts {:gate-a-multi-node-staging-soak :pass
+                 :gate-b-headless-chrome-cdp-e2e :pass}
+ :summary "BIP-020 Stage 4 Verification Results (Run 2): 100% PASS across BOTH Gate A and Gate B! Gate A Run 2 (Multi-Node Staging Soak against Nexus's 0c3958e F1+F2-fixed bundles bacb278b... [1,685,423 B] + 4daafab0... [1,712,152 B] on isolated 6-node cluster TICK_MS=1500 + 3 light-node daemons alice/bob[P2P+mesh]/carol[mesh-only]) PASSED every single criterion: BIP-020-STAGE4-F1 is 100% RESOLVED (mesh-only carol on ns3 received 105/105 subnet broadcasts [100%] + 52/52 direct mesh DMs [100%] = 157/157, and P2P+mesh bob on ns2 received 105/105 subnet broadcasts + 53/53 direct P2P DMs = 158/158, 0 silent drops across all 315 deliveries, latency p50=158ms, p95=1,060ms, p99=1,153ms, max=1,170ms <= 5,000ms); BIP-020-STAGE4-F2 is 100% RESOLVED (alice ctl status reports honest delivery_telemetry.sent=210, acked=105, ring_buffer_count=256 <= 256, fanout={mesh_submitted:157, p2p_direct:210, peers_targeted:472, mesh_submit_failed:0}, and honest synchronous ctl broadcast/send receipt fields with route/mesh_submitted/p2p_direct/peers_targeted); 144 consecutive finalized epochs settled across all 6 nodes with 0 skew; 6/6 staggered rolling restarts (node3->node2->node1->ns3->ns2->ns1) all recovered cleanly in 6.7s..38.9s; --events-out mismatch loud WARN + control.json events_out verified; resource bounds passed with peak RSS 140.27..146.89 MiB <= 200 MiB, 0 HTTP 429 waiter-exhaustion errors, 0 OOMs/crashes. Gate B (Real Headless Chrome/156.0.8078.47 --headless=new Raw-CDP E2E on untouched 21cbcdba... bitecho-browser.js + bip-020-hive-ui-parity /app/) remains 100% PASS."
+ :prior-runs
+ [{:run 1
+   :executed-at "2026-11-23T00:15:28.978Z"
+   :completed-at "2026-11-23T00:46:46.697Z"
+   :full-node-sha256 "d92d23c3a0c8b67a129d9603db92df68c5bbed9fce3ad7526ff169ad19a2d8c6"
+   :light-node-sha256 "3c07e0afd6ce927271442a4fb5986987739cf1d2232c84d40357e92e77ffc440"
+   :browser-sha256 "21cbcdbac1aad9ebeb0ac5ba5d5389808b88790856c8935951979871a8105508"
+   :receipt-cid "f92ec512501e19b7de2543333c8a30816d74208b046b7f127a390eb3dd9cabe1"
+   :receipt-bytes 17188
+   :overall-verdict :partial-pass-gate-b-pass-gate-a-fail-with-actionable-findings
+   :gate-verdicts {:gate-a-multi-node-staging-soak :fail-with-actionable-findings
+                   :gate-b-headless-chrome-cdp-e2e :pass}
+   :findings ["BIP-020-STAGE4-F1" "BIP-020-STAGE4-F2"]
+   :note "Gate B Chrome/156 CDP E2E passed 100%; Gate A failed with F1 (carol received 0/105 subnet broadcasts across ns1->ns3) and F2 (alice delivery_telemetry.sent=0 and fanout=0 on http-relay). Both findings resolved in 0c3958e and verified in Run 2."}]
+ :resolved-followups
+ [{:id "BIP-020-STAGE4-F1"
+   :severity :critical
+   :resolved-in-commit "0c3958e"
+   :resolved-in-run 2
+   :component "bitecho-full-node.js (bacb278b...) / relay-to-relay & validator-bridge subnet broadcast replication"
+   :summary "Mesh-only subscriber carol (on ns3:18406, subscribed to bip020.test/soak) received 105/105 subnet broadcasts (100%) and 52/52 direct mesh DMs (100%) from alice (on ns1:18404), and P2P+mesh subscriber bob (on ns2:18405) received 105/105 subnet broadcasts (100%) and 53/53 direct P2P DMs (100%) — 0 silent drops across all 315 expected deliveries."
+   :verified? true}
+  {:id "BIP-020-STAGE4-F2"
+   :severity :high
+   :resolved-in-commit "0c3958e"
+   :resolved-in-run 2
+   :component "bitecho-light-node.js (4daafab0...) / http-relay delivery_telemetry accounting"
+   :summary "On alice (http-relay transport), after 210 ok=true sends (105 subnet broadcasts + 53 P2P DMs + 52 mesh DMs), ctl status reported honest delivery_telemetry.sent=210, acked=105, ring_buffer_count=256 (<= 256), and fanout={mesh_submitted:157, p2p_direct:210, peers_targeted:472, mesh_submit_failed:0}, and synchronous ctl broadcast/send receipts returned accurate route/mesh_submitted/p2p_direct/peers_targeted fields."
+   :verified? true}]
+ :gate-a
+ {:verdict :pass
+  :run 2
+  :started-at "2026-11-23T01:17:23.785Z"
+  :completed-at "2026-11-23T01:21:06.619Z"
+  :duration-sec 222.83
+  :topology {:validators [:node1 :node2 :node3]
+             :infra-relays [:ns1 :ns2 :ns3]
+             :tick-ms 1500
+             :light-nodes [{:id :alice :role :sender :primary-relay "http://127.0.0.1:18404" :p2p-ingress-port 18475}
+                           {:id :bob :role :p2p-and-mesh-subscriber :primary-relay "http://127.0.0.1:18405" :p2p-ingress-port 18476}
+                           {:id :carol :role :mesh-only-subscriber :primary-relay "http://127.0.0.1:18406" :p2p-ingress-port nil}]
+             :subnet-id "bip020.test/soak"
+             :petnames-populated? true
+             :sessions-established {:alice-bob "6b5eb65b3a410804b21db695eca05d2cba7796791365f78462a6d7d472d9040b"
+                                    :alice-carol "0b62960be1a13c5a01d8a058cec14621d1fd3d8a8718a5d423df9da434226dbb"}}
+  :criteria-evaluation
+  {:consecutive-finalized-epochs-ge-144 {:passed? true
+                                         :required ">= 144"
+                                         :observed-min-settled 144
+                                         :observed-per-node-final {:node1 144 :node2 144 :node3 144 :ns1 144 :ns2 144 :ns3 144}
+                                         :settled-skew 0}
+   :mixed-messaging-ge-200-zero-silent-drops {:passed? true
+                                              :resolved-finding-ids ["BIP-020-STAGE4-F1" "BIP-020-STAGE4-F2"]
+                                              :required ">= 200 mixed direct + subnet broadcasts across P2P and mesh-only subscribers, 0 silent drops, p99 <= 5000ms, truthful mesh_submitted/p2p_direct/sent/acked"
+                                              :observed {:total-attempted 210
+                                                         :total-sent-ok 210
+                                                         :total-sent-fail 0
+                                                         :subnet-broadcasts 105
+                                                         :direct-p2p-dms 53
+                                                         :direct-mesh-dms 52
+                                                         :bob-p2p-and-mesh {:expected 158 :delivered 158 :broadcast-received 105 :message-received 53 :duplicate-replay 210 :foreign-unicast 52}
+                                                         :carol-mesh-only {:expected 157 :delivered 157 :broadcast-received 105 :message-received 52 :duplicate-replay 0}
+                                                         :silent-drops 0
+                                                         :latency-ms {:samples 315 :p50 158 :p95 1060 :p99 1153 :max 1170 :within-5s? true}
+                                                         :alice-telemetry {:sent 210 :acked 105 :ring-buffer-count 256 :ring-buffer-max 256 :mesh-submitted 157 :p2p-direct 210 :peers-targeted 472 :mesh-submit-failed 0 :duplicate-replay 105}
+                                                         :sample-ctl-receipts {:broadcast {:ok true :subnet-id "bip020.test/soak" :route "mesh+p2p" :mesh-submitted true :p2p-direct true :peers-targeted 3}
+                                                                               :dm-bob {:ok true :transport "udp" :route "p2p" :mesh-submitted false :p2p-direct true :peers-targeted 1}
+                                                                               :dm-carol {:ok true :transport "mesh" :route "mesh+p2p" :mesh-submitted true :p2p-direct true :peers-targeted 2}}}}
+   :staggered-rolling-restarts-all-6-nodes {:passed? true
+                                            :required "staggered rolling restarts across node3->node2->node1 and ns3->ns2->ns1 with clean recovery"
+                                            :restarts [{:order 1 :node :node3 :trigger-min-fin 39 :recovered-ms 34906 :post-fin 62 :recovered? true}
+                                                       {:order 2 :node :node2 :trigger-min-fin 62 :recovered-ms 38920 :post-fin 87 :recovered? true}
+                                                       {:order 3 :node :node1 :trigger-min-fin 92 :recovered-ms 12706 :post-fin 97 :recovered? true}
+                                                       {:order 4 :node :ns3 :trigger-min-fin 97 :recovered-ms 6662 :post-fin 103 :recovered? true}
+                                                       {:order 5 :node :ns2 :trigger-min-fin 103 :recovered-ms 10666 :post-fin 109 :recovered? true}
+                                                       {:order 6 :node :ns1 :trigger-min-fin 109 :recovered-ms 16729 :post-fin 125 :recovered? true}]}
+   :events-out-mismatch-test {:passed? true
+                              :control-json-has-events-out? true
+                              :control-json-events-out "/tmp/bip020-stage4-run2/light-alice/events.jsonl"
+                              :mismatched-path "/tmp/bip020-stage4-run2/wrong-events-mismatch.jsonl"
+                              :loud-warning-detected? true
+                              :stderr-sample "WARN: events-out-mismatch: wait-event targeting /tmp/bip020-stage4-run2/wrong-events-mismatch.jsonl but daemon control.json has events_out=\"/tmp/bip020-stage4-run2/light-alice/events.jsonl\""}
+   :ctl-status-pillar-1-4-telemetry {:passed? true
+                                     :merged-core-diagnostics? true
+                                     :ring-buffer-max 256
+                                     :alice-ring-buffer-count 256
+                                     :pillar-counters-present [:sent :acked :evicted_by_reason :unacked_aged :received_but_not_emitted :fanout]
+                                     :note "All Pillar 1-4 delivery_telemetry and fanout counters verified truthful on http-relay and P2P transports (BIP-020-STAGE4-F2 resolved)."}
+   :resource-bounds {:passed? true
+                     :required "Infra RSS <= 200 MiB, 0 HTTP 429 waiter-exhaustion, 0 crashes/OOMs"
+                     :peak-rss-mib {:node1 140.27 :node2 141.5 :node3 140.79 :ns1 146.89 :ns2 145.02 :ns3 146.09}
+                     :max-peak-rss-mib 146.89
+                     :http-429-counts {:ns1 0 :ns2 0 :ns3 0 :total 0}
+                     :unexpected-exits 0
+                     :ooms 0}}
+  :findings []}
+ :gate-b
+ {:verdict :pass
+  :started-at "2026-11-23T00:15:28.978Z"
+  :completed-at "2026-11-23T00:15:39.981Z"
+  :duration-sec 11.0
+  :chrome-version "Chrome/156.0.8078.47"
+  :served-url "http://127.0.0.1:18480/"
+  :security-headers {:coop "same-origin"
+                     :coep "credentialless"
+                     :csp "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob: https://bitecho.org https://ns1.bitecho.org https://ns2.bitecho.org https://ns3.bitecho.org https://node1.ingress.bitecho.org https://node2.ingress.bitecho.org https://node3.ingress.bitecho.org wss://bitecho.org; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"}
+  :criteria-evaluation
+  {:boot-and-isolation {:passed? true
+                        :cross-origin-isolated? true
+                        :csp-violations 0
+                        :console-errors 0
+                        :uncaught-exceptions 0
+                        :sri-verified? true
+                        :api-version "1.1.0"
+                        :bundle-version "0.23.21"
+                        :initial-badge-text "BitechoLightNode v1.1.0 DISCONNECTED (0.23.21)"
+                        :initial-badge-class "pill live"}
+   :live-mesh-connect {:passed? true
+                       :connect-ms 604
+                       :mesh-connected? true
+                       :open-peers ["ns2" "node2" "node3" "ns3" "ns1" "node1"]
+                       :open-peer-count 6
+                       :badge-text "BitechoLightNode v1.1.0 LIVE (0.23.21)"
+                       :badge-class "pill ok"}
+   :diagnostics-drawer-pillar-1-4 {:passed? true
+                                   :button-id "#delivery-diag-btn"
+                                   :drawer-id "#delivery-diag-drawer"
+                                   :opened? true
+                                   :aria-expanded "true"
+                                   :missing-labels []
+                                   :rendered-counters [:sent :acked :evicted_by_reason :unacked_aged :mesh_submitted :p2p_direct :received_but_not_emitted]}
+   :sorted-map-petnames-no-compare-error {:passed? true
+                                          :populated-petnames ["axiom" "nexus"]
+                                          :compare-error-thrown? false
+                                          :offer-by-pk-ok? true
+                                          :offer-by-unknown-name-error "unknown-petname"}
+   :dead-mesh-6-peer-ice-cascade-fault-injection {:passed? true
+                                                  :method "CDP Network.setBlockedURLs (*bitecho.org*) + Network.emulateNetworkConditions(offline: true) + severing 6/6 live RTCPeerConnections & RTCDataChannels"
+                                                  :disconnect-detected-ms 164
+                                                  :within-5s? true
+                                                  :mesh-connected-during-fault? false
+                                                  :degraded-during-fault? true
+                                                  :badge-during-fault-text "BitechoLightNode v1.1.0 DEGRADED (relay) (0.23.21)"
+                                                  :badge-during-fault-class "pill warn"
+                                                  :never-stuck-green-live? true}
+   :dead-mesh-send-loud-failure {:passed? true
+                                 :api-send-broadcast-result {:ok false :mesh-submitted false :peers-targeted 0 :error "no-open-mesh-channels"}
+                                 :ui-inline-delivery-pill {:status "rejected" :text "rejected (no-open-mesh-channels)" :class "pill live delivery-pill"}
+                                 :diagnose-count-before-send 6
+                                 :diagnose-count-after-send 11
+                                 :diagnose-reasons-recorded ["closed" "connection-not-open" "mesh-submit-failed" "send-rejected"]
+                                 :tts-status "Send rejected: no-open-mesh-channels"}
+   :bounded-auto-redial-and-recovery {:passed? true
+                                      :outage-dial-attempts 2
+                                      :outage-attempts-le-5? true
+                                      :max-concurrent-dials 2
+                                      :concurrent-dials-le-2? true
+                                      :recovery-ms 3533
+                                      :mesh-connected-after-recovery? true
+                                      :badge-after-recovery-text "BitechoLightNode v1.1.0 LIVE (0.23.21)"
+                                      :badge-after-recovery-class "pill ok"}
+   :js-heap-bounds {:passed? true
+                    :baseline-mib 6.641
+                    :final-mib 10.591
+                    :delta-mib 3.95
+                    :within-16-mib? true}}}}

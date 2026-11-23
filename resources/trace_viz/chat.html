@@ -100,6 +100,57 @@
     font-size: 0.71rem;
     line-height: 1.45;
   }
+  .diag-drawer {
+    display: none;
+    border-bottom: 1px solid var(--border);
+    background: rgba(15, 23, 42, 0.96);
+    padding: 10px 16px;
+    font-size: 0.76rem;
+    color: var(--text);
+  }
+  .diag-drawer.open { display: block; }
+  .diag-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .diag-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 6px 9px;
+  }
+  .diag-card-label {
+    color: var(--muted);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .diag-card-val {
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin-top: 2px;
+  }
+  .diag-ring {
+    margin-top: 8px;
+    max-height: 120px;
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 6px 9px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+  .delivery-pill {
+    font-size: 0.66rem;
+    padding: 1px 6px;
+    margin-left: 6px;
+    font-weight: 600;
+    text-transform: lowercase;
+  }
   .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   select, button, input {
     background: var(--panel-2);
@@ -266,6 +317,7 @@
       <button id="relay-health-pill" type="button" class="relay-pill" title="Relay pool health (click to inspect per-relay RTT, epoch, cooldown &amp; failovers)" aria-expanded="false">Relays: --/3</button>
       <div id="relay-health-popover" class="relay-popover" role="dialog" aria-label="Relay Pool Diagnostics"></div>
     </span>
+    <button id="delivery-diag-btn" type="button" class="relay-pill" title="Toggle BIP-020 Delivery Diagnostics Drawer (Pillar 1-4 counters &amp; diagnose ring buffer)" aria-expanded="false">Diagnostics</button>
     <span id="node-id-badge" class="pill" style="display:none;"></span>
     <a class="nav-link" href="/">← Trace Audio Visualizer</a>
   </div>
@@ -283,6 +335,8 @@
     <button id="btn-connect" class="primary">Connect Node</button>
   </div>
 </header>
+
+<section id="delivery-diag-drawer" class="diag-drawer" role="region" aria-label="BIP-020 Delivery Diagnostics"></section>
 
 <div class="main">
   <aside>

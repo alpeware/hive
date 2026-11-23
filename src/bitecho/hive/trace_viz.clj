@@ -206,6 +206,113 @@
       (str base " · " fo (if (= fo 1) " failover" " failovers"))
       base)))
 
+;; ---------------------------------------------------------------------------
+;; Pure Core (BIP-020 Stage 3): Honest Mesh Badge, Delivery Telemetry & Outbound Status
+;; ---------------------------------------------------------------------------
+
+(def max-diagnose-ring-entries
+  "BIP-020 Stage 3: Bounded `:diagnose` ring-buffer slice size surfaced in `/app/`."
+  64)
+
+(defn classify-mesh-badge
+  "Pure BIP-020 Stage 3 classifier for the Hive `/app/` `#api-badge`.
+   Input: `{:mesh-connected? :degraded? :relay-fallback-active?}`.
+   Output: `{:state :live|:degraded|:disconnected :label ... :css-class ...}`.
+   Invariant: NEVER returns `:live` (green) when `:mesh-connected?` is false or
+   `:degraded?` is true."
+  [{:keys [mesh-connected? degraded? relay-fallback-active?]}]
+  (let [connected? (boolean mesh-connected?)
+        deg? (boolean degraded?)
+        relay-fb? (boolean relay-fallback-active?)]
+    (cond
+      (and connected? (not deg?))
+      {:state :live
+       :label "LIVE"
+       :css-class "pill ok"}
+
+      (or deg? (and (not connected?) relay-fb?))
+      {:state :degraded
+       :label "DEGRADED (relay)"
+       :css-class "pill warn"}
+
+      :else
+      {:state :disconnected
+       :label "DISCONNECTED"
+       :css-class "pill live"})))
+
+(defn- non-neg-long
+  [v]
+  (if (number? v)
+    (max 0 (long v))
+    0))
+
+(defn- first-present
+  [m ks]
+  (when (map? m)
+    (some (fn [k]
+            (when (contains? m k)
+              (get m k)))
+          ks)))
+
+(defn- normalize-counter-map
+  [m]
+  (if (map? m)
+    (reduce-kv (fn [acc k v]
+                 (assoc acc k (non-neg-long v)))
+               {}
+               m)
+    {}))
+
+(defn summarize-delivery-telemetry
+  "Pure BIP-020 Stage 3 normalizer for Pillar 1–4 delivery telemetry counters and
+   bounded `:diagnose` ring-buffer slice (`<= 64` entries).
+   Works gracefully with both pre-BIP-020 (`v0.23.21`) and BIP-020 status payloads."
+  [raw]
+  (let [m (if (map? raw) raw {})
+        sent (non-neg-long (first-present m [:sent "sent"]))
+        acked (non-neg-long (first-present m [:acked "acked"]))
+        evicted-raw (first-present m [:evicted_by_reason :evicted-by-reason :evictedByReason "evicted_by_reason" "evictedByReason"])
+        evicted-map (normalize-counter-map evicted-raw)
+        unacked-aged (non-neg-long (first-present m [:unacked_aged :unacked-aged :unackedAged "unacked_aged" "unackedAged"]))
+        mesh-submitted (non-neg-long (first-present m [:mesh_submitted :mesh-submitted :meshSubmitted "mesh_submitted" "meshSubmitted"]))
+        p2p-direct (non-neg-long (first-present m [:p2p_direct :p2p-direct :p2pDirect "p2p_direct" "p2pDirect"]))
+        rne-raw (first-present m [:received_but_not_emitted :received-but-not-emitted :receivedButNotEmitted
+                                  "received_but_not_emitted" "receivedButNotEmitted"])
+        rne (if (map? rne-raw)
+              (normalize-counter-map rne-raw)
+              (non-neg-long rne-raw))
+        mesh-conn? (boolean (first-present m [:mesh_connected :mesh-connected? :meshConnected "mesh_connected" "meshConnected"]))
+        relay-fb? (boolean (first-present m [:relay_fallback_active :relay-fallback-active? :relayFallbackActive
+                                             "relay_fallback_active" "relayFallbackActive"]))
+        diag-raw (first-present m [:diagnose :diagnose_events :diagnose-events :diagnoseEvents
+                                   "diagnose" "diagnose_events" "diagnoseEvents"])
+        diag-vec (if (sequential? diag-raw)
+                   (vec (take-last max-diagnose-ring-entries diag-raw))
+                   [])]
+    {:sent sent
+     :acked acked
+     :evicted_by_reason evicted-map
+     :unacked_aged unacked-aged
+     :mesh_submitted mesh-submitted
+     :p2p_direct p2p-direct
+     :received_but_not_emitted rne
+     :mesh_connected mesh-conn?
+     :relay_fallback_active relay-fb?
+     :diagnose diag-vec}))
+
+(defn classify-outbound-delivery-status
+  "Pure BIP-020 Stage 3 classifier for per-message outbound delivery status.
+   Input: `{:ok :queued :evicted :error}`.
+   Output: `:sent` | `:queued` | `:evicted` | `:rejected`.
+   Invariant: NEVER returns `:sent` when `:ok` is false or `:error` is non-blank."
+  [{:keys [ok queued evicted error]}]
+  (let [has-error? (not (str/blank? (str error)))]
+    (cond
+      (boolean evicted) :evicted
+      (or (not (true? ok)) has-error?) :rejected
+      (boolean queued) :queued
+      :else :sent)))
+
 (defn default-petname-voices
   "Petname entries for the 5-member Bitecho builders-stewards circle, including
    each member's default Kokoro-82M `voice_id` for browser TTS playback."

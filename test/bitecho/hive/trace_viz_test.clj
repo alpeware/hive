@@ -96,6 +96,116 @@
                          (= 1 failovers) (str/ends-with? s " · 1 failover")
                          :else (str/ends-with? s (str " · " failovers " failovers")))))))
 
+(defspec ^{:doc "BIP-020 Stage 3: #api-badge honesty — NEVER returns :live (green) when disconnected or degraded."}
+  prop-mesh-badge-honesty-never-green-when-disconnected 100
+  (prop/for-all [mesh-connected? gen/boolean
+                 degraded? gen/boolean
+                 relay-fallback-active? gen/boolean]
+                (let [res (viz/classify-mesh-badge {:mesh-connected? mesh-connected?
+                                                    :degraded? degraded?
+                                                    :relay-fallback-active? relay-fallback-active?})]
+                  (and (contains? #{:live :degraded :disconnected} (:state res))
+                       (string? (:label res))
+                       (not (str/blank? (:label res)))
+                       (string? (:css-class res))
+                       ;; Core honesty invariant: NEVER :live or green pill when disconnected or degraded
+                       (if (or (not mesh-connected?) degraded?)
+                         (and (not= :live (:state res))
+                              (not= "pill ok" (:css-class res)))
+                         (and (= :live (:state res))
+                              (= "pill ok" (:css-class res))))
+                       ;; Disconnected when neither mesh nor relay fallback is active (and not degraded)
+                       (if (and (not mesh-connected?) (not relay-fallback-active?) (not degraded?))
+                         (and (= :disconnected (:state res))
+                              (= "pill live" (:css-class res)))
+                         true)
+                       ;; Degraded when degraded? or relay fallback active while mesh disconnected
+                       (if (or degraded? (and (not mesh-connected?) relay-fallback-active?))
+                         (and (= :degraded (:state res))
+                              (= "pill warn" (:css-class res)))
+                         true)))))
+
+(def ^:private gen-evicted-map
+  (gen/map (gen/elements [:capacity-overflow :expired :retry-exhausted :peer-closed])
+           (gen/choose -10 500)))
+
+(def ^:private gen-diagnose-event
+  (gen/hash-map
+   :reason (gen/elements [:ice-disconnected :relay-failover :outbox-evicted :broadcast-gap-detected])
+   :ts (gen/choose 1000 999999)))
+
+(defspec ^{:doc "BIP-020 Stage 3: Delivery telemetry summary normalizes Pillar 1-4 counters and bounds :diagnose ring-buffer to <= 64 entries."}
+  prop-delivery-telemetry-summary-bounded-and-honest 100
+  (prop/for-all [sent (gen/choose -20 5000)
+                 acked (gen/choose -20 5000)
+                 evicted-by-reason gen-evicted-map
+                 unacked-aged (gen/choose -10 200)
+                 mesh-submitted (gen/choose -10 5000)
+                 p2p-direct (gen/choose -10 5000)
+                 received-not-emitted (gen/one-of [(gen/choose -5 100)
+                                                   (gen/map (gen/elements [:duplicate :filtered :decode-error])
+                                                            (gen/choose -5 50))])
+                 diag-events (gen/vector gen-diagnose-event 0 120)
+                 mesh-connected? gen/boolean
+                 relay-fallback-active? gen/boolean]
+                (let [res (viz/summarize-delivery-telemetry
+                           {:sent sent
+                            :acked acked
+                            :evicted_by_reason evicted-by-reason
+                            :unacked_aged unacked-aged
+                            :mesh_submitted mesh-submitted
+                            :p2p_direct p2p-direct
+                            :received_but_not_emitted received-not-emitted
+                            :diagnose diag-events
+                            :mesh_connected mesh-connected?
+                            :relay_fallback_active relay-fallback-active?})
+                      expected-diag (vec (take-last 64 diag-events))]
+                  (and (= (:sent res) (max 0 sent))
+                       (= (:acked res) (max 0 acked))
+                       (= (:unacked_aged res) (max 0 unacked-aged))
+                       (= (:mesh_submitted res) (max 0 mesh-submitted))
+                       (= (:p2p_direct res) (max 0 p2p-direct))
+                       (map? (:evicted_by_reason res))
+                       (every? #(>= % 0) (vals (:evicted_by_reason res)))
+                       (vector? (:diagnose res))
+                       (<= (count (:diagnose res)) 64)
+                       (= (:diagnose res) expected-diag)
+                       (= (:mesh_connected res) mesh-connected?)
+                       (= (:relay_fallback_active res) relay-fallback-active?)
+                       (if (map? received-not-emitted)
+                         (and (map? (:received_but_not_emitted res))
+                              (every? #(>= % 0) (vals (:received_but_not_emitted res))))
+                         (= (:received_but_not_emitted res) (max 0 received-not-emitted)))))))
+
+(defspec ^{:doc "BIP-020 Stage 3: Outbound delivery status NEVER returns :sent when :ok is false or error is non-blank."}
+  prop-outbound-delivery-status-never-sent-on-failure 100
+  (prop/for-all [ok (gen/elements [true false nil])
+                 queued gen/boolean
+                 evicted gen/boolean
+                 err (gen/elements [nil "" "mesh-disconnected" "outbox-full" "timeout"])]
+                (let [status (viz/classify-outbound-delivery-status {:ok ok
+                                                                     :queued queued
+                                                                     :evicted evicted
+                                                                     :error err})
+                      has-err? (not (str/blank? (str err)))]
+                  (and (contains? #{:sent :queued :evicted :rejected} status)
+                       ;; NEVER :sent when :ok is not true or when an error occurred
+                       (if (or (not (true? ok)) has-err?)
+                         (not= :sent status)
+                         true)
+                       ;; Eviction always surfaces as :evicted
+                       (if evicted
+                         (= :evicted status)
+                         true)
+                       ;; Queued on ok (without eviction/error) surfaces as :queued
+                       (if (and (true? ok) (not evicted) (not has-err?) queued)
+                         (= :queued status)
+                         true)
+                       ;; Clean ok without queued/evicted/error surfaces as :sent
+                       (if (and (true? ok) (not evicted) (not has-err?) (not queued))
+                         (= :sent status)
+                         true)))))
+
 (deftest unit-petname-voice-registry-and-trace-parsing
   (testing "All 5 circle members have distinct Kokoro voice IDs in the petname registry"
     (let [petnames (viz/default-petname-voices)
@@ -228,7 +338,31 @@
           (is (str/includes? chat-js "relay-stale-epoch"))
           (is (str/includes? chat-js "formatChunkProgress"))
           (is (str/includes? chat-js "updateRelayHealthPill"))
-          (is (str/includes? chat-js "fetchChunkedWithFailover"))))
+          (is (str/includes? chat-js "fetchChunkedWithFailover")))
+
+        (testing "BIP-020 Stage 3: Honest #api-badge, delivery diagnostics drawer, multi-relay wiring & inline delivery status"
+          (is (str/includes? index-html "id=\"delivery-diag-btn\""))
+          (is (str/includes? index-html "id=\"delivery-diag-drawer\""))
+          (is (str/includes? chat-js "classifyMeshBadge"))
+          (is (str/includes? chat-js "DISCONNECTED"))
+          (is (str/includes? chat-js "DEGRADED (relay)"))
+          (is (str/includes? chat-js "ev.type === \"diagnose\""))
+          (is (str/includes? chat-js "ev.type === \"delivery-outcome\""))
+          (is (str/includes? chat-js "ev.type === \"status\" || ev.type === \"mesh-state\""))
+          (is (str/includes? chat-js "node.onStateChange"))
+          (is (str/includes? chat-js "relayUrls"))
+          (is (str/includes? chat-js "evicted_by_reason"))
+          (is (str/includes? chat-js "unacked_aged"))
+          (is (str/includes? chat-js "mesh_submitted"))
+          (is (str/includes? chat-js "p2p_direct"))
+          (is (str/includes? chat-js "received_but_not_emitted"))
+          (is (str/includes? chat-js "relayFallbackActive"))
+          (is (str/includes? chat-js "classifyOutboundDeliveryStatus"))
+          (is (str/includes? chat-js "delivery-pill"))
+          (is (str/includes? chat-js "\"rejected\""))
+          (is (str/includes? chat-js "\"evicted\""))
+          (is (str/includes? chat-js "\"queued\""))
+          (is (not (str/includes? chat-js "LIVE (${api.version")))))
       (finally
         (doseq [f (reverse (file-seq tmp-dir))]
           (.delete f))))))
@@ -275,3 +409,50 @@
                                        :total 42
                                        :relay "https://ns3.bitecho.org"
                                        :failovers 2})))))
+
+(deftest unit-bip020-ui-parity-examples
+  (testing "classify-mesh-badge covers all 3 states honestly"
+    (is (= {:state :live :label "LIVE" :css-class "pill ok"}
+           (viz/classify-mesh-badge {:mesh-connected? true :degraded? false :relay-fallback-active? false})))
+    (is (= {:state :degraded :label "DEGRADED (relay)" :css-class "pill warn"}
+           (viz/classify-mesh-badge {:mesh-connected? false :degraded? false :relay-fallback-active? true})))
+    (is (= {:state :degraded :label "DEGRADED (relay)" :css-class "pill warn"}
+           (viz/classify-mesh-badge {:mesh-connected? true :degraded? true :relay-fallback-active? false})))
+    (is (= {:state :disconnected :label "DISCONNECTED" :css-class "pill live"}
+           (viz/classify-mesh-badge {:mesh-connected? false :degraded? false :relay-fallback-active? false}))))
+
+  (testing "summarize-delivery-telemetry degrades gracefully on pre-BIP-020 payloads and caps :diagnose at 64"
+    (let [empty-res (viz/summarize-delivery-telemetry {})
+          big-diag (vec (for [i (range 90)] {:reason :outbox-evicted :seq i}))
+          capped (viz/summarize-delivery-telemetry {:sent 12
+                                                    :acked 10
+                                                    :evicted_by_reason {:capacity-overflow 2}
+                                                    :unacked_aged 1
+                                                    :mesh_submitted 12
+                                                    :p2p_direct 8
+                                                    :received_but_not_emitted {:duplicate 3}
+                                                    :meshConnected true
+                                                    :relayFallbackActive false
+                                                    :diagnose big-diag})]
+      (is (= 0 (:sent empty-res)))
+      (is (= {} (:evicted_by_reason empty-res)))
+      (is (= [] (:diagnose empty-res)))
+      (is (= 64 (count (:diagnose capped))))
+      (is (= 26 (:seq (first (:diagnose capped)))))
+      (is (= 89 (:seq (last (:diagnose capped)))))
+      (is (= 12 (:mesh_submitted capped)))
+      (is (= 8 (:p2p_direct capped)))
+      (is (= {:duplicate 3} (:received_but_not_emitted capped)))))
+
+  (testing "classify-outbound-delivery-status maps all 4 outcomes honestly"
+    (is (= :sent (viz/classify-outbound-delivery-status {:ok true :queued false :evicted false :error nil})))
+    (is (= :queued (viz/classify-outbound-delivery-status {:ok true :queued true :evicted false :error nil})))
+    (is (= :evicted (viz/classify-outbound-delivery-status {:ok false :queued false :evicted true :error "outbox-full"})))
+    (is (= :rejected (viz/classify-outbound-delivery-status {:ok false :queued false :evicted false :error "mesh-disconnected"}))))
+
+  (testing "chat.html source has delivery-diag-btn, delivery-diag-drawer, and zero inline <script> tags"
+    (let [chat-html (slurp (io/file "resources/trace_viz/chat.html"))
+          validation (viz/validate-html-scripts chat-html {})]
+      (is (str/includes? chat-html "id=\"delivery-diag-btn\""))
+      (is (str/includes? chat-html "id=\"delivery-diag-drawer\""))
+      (is (not (some #(= :inline-script (:kind %)) (:errors validation)))))))
