@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Bitecho Hive — Live Chat UI (BitechoLightNode v1.1.0 + Per-Petname TTS + Local VAD/STT)</title>
 <script src="/api/bitecho-browser.js"
-        integrity="sha384-WRPMyemj6CDuOsW+HPon/7yPEmXQxs0Y/ilgxom8/ovv41QH0o1B8KegrG8LB5IR"
+        integrity="sha384-x0L61zPJZq/DSQjF9Sl3/KlcmvsQDU6hlCmvODcs9Nkf823oI/b2dRt3tbDfKJle"
         crossorigin="anonymous"></script>
 <style>
   :root {
@@ -150,6 +150,25 @@
     margin-left: 6px;
     font-weight: 600;
     text-transform: lowercase;
+  }
+  .rekey-banner {
+    display: none;
+    border: 1px solid rgba(251, 113, 133, 0.75);
+    background: rgba(190, 18, 60, 0.18);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 0.8rem;
+    gap: 8px;
+    flex-direction: column;
+  }
+  .rekey-banner.open { display: flex; }
+  .rekey-banner-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
   }
   .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   select, button, input {
@@ -424,6 +443,7 @@
       <span id="channel-header">Select a subnet or DM session</span>
       <span id="tts-status">TTS ready</span>
     </div>
+    <div id="rekey-banner" class="rekey-banner" role="alert" aria-live="assertive"></div>
     <div id="messages" class="messages"></div>
 
     <div class="voice-bar">

@@ -206,6 +206,63 @@
                          (= :sent status)
                          true)))))
 
+(defspec ^{:doc "BIP-021: Honest liveness projection — NEVER returns :live when mesh-open-peers == 0 or transport-healthy? is false."}
+  prop-bip021-mesh-badge-honesty-with-liveness-fields 100
+  (prop/for-all [mesh-open-peers (gen/choose 0 5)
+                 transport-healthy? (gen/elements [true false nil])
+                 degraded? gen/boolean
+                 relay-fallback-active? gen/boolean]
+                (let [res (viz/classify-mesh-badge {:mesh-connected? (pos? mesh-open-peers)
+                                                    :mesh-open-peers mesh-open-peers
+                                                    :transport-healthy? transport-healthy?
+                                                    :degraded? degraded?
+                                                    :relay-fallback-active? relay-fallback-active?})]
+                  (and (contains? #{:live :degraded :disconnected} (:state res))
+                       (if (or (zero? mesh-open-peers) (false? transport-healthy?) degraded?)
+                         (and (not= :live (:state res))
+                              (not= "pill ok" (:css-class res)))
+                         (and (= :live (:state res))
+                              (= "pill ok" (:css-class res))))
+                       (if (and (zero? mesh-open-peers) relay-fallback-active?)
+                         (and (= :degraded (:state res))
+                              (= "DEGRADED (relay)" (:label res))
+                              (= "pill warn" (:css-class res)))
+                         true)))))
+
+(defspec ^{:doc "BIP-021: Delivery & integrity telemetry normalizes liveness fields and BIP-021 diagnostic counters."}
+  prop-bip021-diagnostics-counters-normalized 100
+  (prop/for-all [mesh-open-peers (gen/choose -5 10)
+                 connected? gen/boolean
+                 transport-healthy? gen/boolean
+                 relay-fb? gen/boolean
+                 sub-rec (gen/choose -5 50)
+                 dac-miss (gen/choose -5 50)
+                 dac-inv (gen/choose -5 50)
+                 sig-inv (gen/choose -5 50)
+                 rb-det (gen/choose -5 50)
+                 rep-det (gen/choose -5 50)]
+                (let [res (viz/summarize-delivery-telemetry
+                           {:connected connected?
+                            :transport_healthy transport-healthy?
+                            :mesh_open_peers mesh-open-peers
+                            :relay_fallback_active relay-fb?
+                            :diagnostics {:subnet-id-reconciled sub-rec
+                                          :broadcast-dac-missing dac-miss
+                                          :broadcast-dac-invalid dac-inv
+                                          :broadcast-sig-invalid sig-inv
+                                          :session-tx-seq-rollback-detected rb-det
+                                          :session-replay-detected rep-det}})]
+                  (and (= (:connected res) connected?)
+                       (= (:transport_healthy res) transport-healthy?)
+                       (= (:mesh_open_peers res) (max 0 mesh-open-peers))
+                       (= (:relay_fallback_active res) relay-fb?)
+                       (= (:subnet_id_reconciled res) (max 0 sub-rec))
+                       (= (:broadcast_dac_missing res) (max 0 dac-miss))
+                       (= (:broadcast_dac_invalid res) (max 0 dac-inv))
+                       (= (:broadcast_sig_invalid res) (max 0 sig-inv))
+                       (= (:session_tx_seq_rollback_detected res) (max 0 rb-det))
+                       (= (:session_replay_detected res) (max 0 rep-det))))))
+
 (deftest unit-petname-voice-registry-and-trace-parsing
   (testing "All 5 circle members have distinct Kokoro voice IDs in the petname registry"
     (let [petnames (viz/default-petname-voices)
@@ -362,7 +419,27 @@
           (is (str/includes? chat-js "\"rejected\""))
           (is (str/includes? chat-js "\"evicted\""))
           (is (str/includes? chat-js "\"queued\""))
-          (is (not (str/includes? chat-js "LIVE (${api.version")))))
+          (is (not (str/includes? chat-js "LIVE (${api.version"))))
+
+        (testing "BIP-021: Stage 3 SRI pin, defaultSubnetId/explicitSubnetId, rekey banner, and honest liveness/diagnostics"
+          (is (= "sha384-x0L61zPJZq/DSQjF9Sl3/KlcmvsQDU6hlCmvODcs9Nkf823oI/b2dRt3tbDfKJle"
+                 viz/browser-bundle-sri))
+          (is (str/includes? index-html "sha384-x0L61zPJZq/DSQjF9Sl3/KlcmvsQDU6hlCmvODcs9Nkf823oI/b2dRt3tbDfKJle"))
+          (is (str/includes? index-html "id=\"rekey-banner\""))
+          (is (str/includes? chat-js "defaultSubnetId: \"devnet.bitecho.org\""))
+          (is (str/includes? chat-js "explicitSubnetId"))
+          (is (str/includes? chat-js "session-seq-mismatch"))
+          (is (str/includes? chat-js "rekey_required"))
+          (is (str/includes? chat-js "initiateX25519Reoffer"))
+          (is (not (str/includes? chat-js "p2p-offer")))
+          (is (str/includes? chat-js "transport_healthy"))
+          (is (str/includes? chat-js "mesh_open_peers"))
+          (is (str/includes? chat-js "subnet_id_reconciled"))
+          (is (str/includes? chat-js "broadcast_dac_missing"))
+          (is (str/includes? chat-js "broadcast_dac_invalid"))
+          (is (str/includes? chat-js "broadcast_sig_invalid"))
+          (is (str/includes? chat-js "session_tx_seq_rollback_detected"))
+          (is (str/includes? chat-js "session_replay_detected"))))
       (finally
         (doseq [f (reverse (file-seq tmp-dir))]
           (.delete f))))))
