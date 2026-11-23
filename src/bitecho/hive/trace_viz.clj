@@ -30,8 +30,8 @@
 ;; ---------------------------------------------------------------------------
 
 (def browser-bundle-sri
-  "Pinned SHA-384 SRI for `bitecho-browser.js` v0.23.19 (CID ecf56ca5...)."
-  "sha384-WRPMyemj6CDuOsW+HPon/7yPEmXQxs0Y/ilgxom8/ovv41QH0o1B8KegrG8LB5IR")
+  "Pinned SHA-384 SRI for `bitecho-browser.js` BIP-021 Stage 3 (CID 46a1dcc5...)."
+  "sha384-+3jXSazFILaf5EqwzKxCr8tj566jXmU21tQU1dxa2MyoZehXzy9K/3/4M3TimUek")
 
 (defn sha256-bytes
   "Pure SHA-256 hex digest of a byte array."
@@ -215,14 +215,19 @@
   64)
 
 (defn classify-mesh-badge
-  "Pure BIP-020 Stage 3 classifier for the Hive `/app/` `#api-badge`.
-   Input: `{:mesh-connected? :degraded? :relay-fallback-active?}`.
+  "Pure BIP-020 Stage 3 / BIP-021 §2.5.1 classifier for the Hive `/app/` `#api-badge`.
+   Input: `{:mesh-connected? :degraded? :relay-fallback-active? :mesh-open-peers :transport-healthy?}`.
    Output: `{:state :live|:degraded|:disconnected :label ... :css-class ...}`.
-   Invariant: NEVER returns `:live` (green) when `:mesh-connected?` is false or
-   `:degraded?` is true."
-  [{:keys [mesh-connected? degraded? relay-fallback-active?]}]
-  (let [connected? (boolean mesh-connected?)
-        deg? (boolean degraded?)
+   Invariant: NEVER returns `:live` (green) when `:mesh-connected?` is false,
+   `:mesh-open-peers` is 0, `:transport-healthy?` is false, or `:degraded?` is true."
+  [{:keys [mesh-connected? degraded? relay-fallback-active? mesh-open-peers transport-healthy?]}]
+  (let [open-peers (when (number? mesh-open-peers) (long mesh-open-peers))
+        connected? (if (some? open-peers)
+                     (and (pos? open-peers)
+                          (if (some? mesh-connected?) (boolean mesh-connected?) true))
+                     (boolean mesh-connected?))
+        deg? (or (boolean degraded?)
+                 (and connected? (false? transport-healthy?)))
         relay-fb? (boolean relay-fallback-active?)]
     (cond
       (and connected? (not deg?))
@@ -249,10 +254,12 @@
 (defn- first-present
   [m ks]
   (when (map? m)
-    (some (fn [k]
-            (when (contains? m k)
-              (get m k)))
-          ks)))
+    (reduce (fn [_ k]
+              (if (contains? m k)
+                (reduced (get m k))
+                nil))
+            nil
+            ks)))
 
 (defn- normalize-counter-map
   [m]
@@ -264,11 +271,18 @@
     {}))
 
 (defn summarize-delivery-telemetry
-  "Pure BIP-020 Stage 3 normalizer for Pillar 1–4 delivery telemetry counters and
-   bounded `:diagnose` ring-buffer slice (`<= 64` entries).
-   Works gracefully with both pre-BIP-020 (`v0.23.21`) and BIP-020 status payloads."
+  "Pure BIP-020 Stage 3 / BIP-021 normalizer for Pillar 1–4 delivery telemetry counters,
+   honest liveness fields, BIP-021 integrity counters, and bounded `:diagnose`
+   ring-buffer slice (`<= 64` entries).
+   Works gracefully with both pre-BIP-020 (`v0.23.21`) and BIP-021 status payloads."
   [raw]
   (let [m (if (map? raw) raw {})
+        diag-map (let [d (first-present m [:diagnostics "diagnostics"])]
+                   (if (map? d) d {}))
+        pick-diag (fn [ks]
+                    (non-neg-long
+                     (let [v1 (first-present diag-map ks)]
+                       (if (some? v1) v1 (first-present m ks)))))
         sent (non-neg-long (first-present m [:sent "sent"]))
         acked (non-neg-long (first-present m [:acked "acked"]))
         evicted-raw (first-present m [:evicted_by_reason :evicted-by-reason :evictedByReason "evicted_by_reason" "evictedByReason"])
@@ -281,7 +295,12 @@
         rne (if (map? rne-raw)
               (normalize-counter-map rne-raw)
               (non-neg-long rne-raw))
+        mesh-open-peers (non-neg-long (first-present m [:mesh_open_peers :mesh-open-peers :meshOpenPeers "mesh_open_peers" "meshOpenPeers"]))
         mesh-conn? (boolean (first-present m [:mesh_connected :mesh-connected? :meshConnected "mesh_connected" "meshConnected"]))
+        connected? (let [c (first-present m [:connected :connected? "connected"])]
+                     (if (some? c) (boolean c) (or mesh-conn? (pos? mesh-open-peers))))
+        transport-healthy? (let [th (first-present m [:transport_healthy :transport-healthy? :transportHealthy "transport_healthy" "transportHealthy"])]
+                             (if (some? th) (boolean th) connected?))
         relay-fb? (boolean (first-present m [:relay_fallback_active :relay-fallback-active? :relayFallbackActive
                                              "relay_fallback_active" "relayFallbackActive"]))
         diag-raw (first-present m [:diagnose :diagnose_events :diagnose-events :diagnoseEvents
@@ -296,8 +315,23 @@
      :mesh_submitted mesh-submitted
      :p2p_direct p2p-direct
      :received_but_not_emitted rne
+     :connected connected?
+     :transport_healthy transport-healthy?
+     :mesh_open_peers mesh-open-peers
      :mesh_connected mesh-conn?
      :relay_fallback_active relay-fb?
+     :subnet_id_reconciled (pick-diag [:subnet_id_reconciled :subnet-id-reconciled :subnetIdReconciled "subnet_id_reconciled" "subnet-id-reconciled"])
+     :cross_network_subnet_switch_blocked (pick-diag [:cross_network_subnet_switch_blocked :cross-network-subnet-switch-blocked "cross_network_subnet_switch_blocked" "cross-network-subnet-switch-blocked"])
+     :broadcast_dac_missing (pick-diag [:broadcast_dac_missing :broadcast-dac-missing :broadcastDacMissing "broadcast_dac_missing" "broadcast-dac-missing"])
+     :broadcast_dac_invalid (pick-diag [:broadcast_dac_invalid :broadcast-dac-invalid :broadcastDacInvalid "broadcast_dac_invalid" "broadcast-dac-invalid"])
+     :broadcast_sig_invalid (pick-diag [:broadcast_sig_invalid :broadcast-sig-invalid :broadcastSigInvalid "broadcast_sig_invalid" "broadcast-sig-invalid"])
+     :broadcast_malformed (pick-diag [:broadcast_malformed :broadcast-malformed :broadcastMalformed "broadcast_malformed" "broadcast-malformed"])
+     :session_tx_seq_rollback_detected (pick-diag [:session_tx_seq_rollback_detected :session-tx-seq-rollback-detected :sessionTxSeqRollbackDetected "session_tx_seq_rollback_detected" "session-tx-seq-rollback-detected"])
+     :session_tx_seq_rollback_evicted (pick-diag [:session_tx_seq_rollback_evicted :session-tx-seq-rollback-evicted "session_tx_seq_rollback_evicted" "session-tx-seq-rollback-evicted"])
+     :session_replay_detected (pick-diag [:session_replay_detected :session-replay-detected :sessionReplayDetected "session_replay_detected" "session-replay-detected"])
+     :session_stale_seq_detected (pick-diag [:session_stale_seq_detected :session-stale-seq-detected "session_stale_seq_detected" "session-stale-seq-detected"])
+     :session_rx_gap_detected (pick-diag [:session_rx_gap_detected :session-rx-gap-detected "session_rx_gap_detected" "session-rx-gap-detected"])
+     :session_ack_invalid (pick-diag [:session_ack_invalid :session-ack-invalid "session_ack_invalid" "session-ack-invalid"])
      :diagnose diag-vec}))
 
 (defn classify-outbound-delivery-status

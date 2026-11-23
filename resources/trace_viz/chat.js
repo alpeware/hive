@@ -383,12 +383,13 @@ let messageLog = [];
 const seenMessageKeys = new Set();
 let petnamesByPk = {};
 
-// BIP-020 Stage 3: Honest Mesh Badge, Pillar 1-4 Delivery Telemetry & Outbound Status
+// BIP-020 Stage 3 / BIP-021: Honest Mesh Badge, Pillar 1-4 Delivery Telemetry, Rollback Rekey & Integrity Counters
 const MAX_DIAGNOSE_RING_ENTRIES = 64;
 const deliveryDiagnosticsState = {
   lastStatus: null,
   diagnose: []
 };
+const rekeyRequiredSessions = new Map();
 
 function escapeHtml(raw) {
   return String(raw ?? "")
@@ -398,9 +399,12 @@ function escapeHtml(raw) {
     .replace(/"/g, "&quot;");
 }
 
-function classifyMeshBadge({ meshConnected, degraded, relayFallbackActive }) {
-  const connected = Boolean(meshConnected);
-  const deg = Boolean(degraded);
+function classifyMeshBadge({ meshConnected, degraded, relayFallbackActive, meshOpenPeers, transportHealthy }) {
+  const hasOpenPeers = typeof meshOpenPeers === "number" && Number.isFinite(meshOpenPeers);
+  const connected = hasOpenPeers
+    ? (meshOpenPeers > 0 && (meshConnected === undefined ? true : Boolean(meshConnected)))
+    : Boolean(meshConnected);
+  const deg = Boolean(degraded) || (connected && transportHealthy === false);
   const relayFb = Boolean(relayFallbackActive);
   if (connected && !deg) {
     return { state: "live", label: "LIVE", cssClass: "pill ok" };
@@ -467,9 +471,65 @@ function summarizeDeliveryTelemetry(rawStatus, ringEvents) {
     ? normalizeCounterMap(rneRaw)
     : toNonNegInt(rneRaw);
 
-  const meshConnected = Boolean(pick(st.meshConnected, st.mesh_connected, st["mesh-connected?"]));
+  const rawOpenPeers = pick(st.meshOpenPeers, st.mesh_open_peers, st["mesh-open-peers"]);
+  const mesh_open_peers = rawOpenPeers !== undefined ? toNonNegInt(rawOpenPeers)
+    : (Array.isArray(st.connectedNodes) ? st.connectedNodes.length : 0);
+  const meshConnected = Boolean(pick(st.meshConnected, st.mesh_connected, st["mesh-connected?"], mesh_open_peers > 0));
+  const connectedRaw = pick(st.connected, st["connected?"]);
+  const connected = connectedRaw !== undefined ? Boolean(connectedRaw) : (meshConnected || mesh_open_peers > 0);
+  const transportHealthyRaw = pick(st.transportHealthy, st.transport_healthy, st["transport-healthy?"]);
+  const transport_healthy = transportHealthyRaw !== undefined ? Boolean(transportHealthyRaw) : connected;
   const relayFallbackActive = Boolean(pick(st.relayFallbackActive, st.relay_fallback_active, st["relay-fallback-active?"]));
   const degraded = Boolean(pick(st.degraded, st["degraded?"]));
+
+  const subnet_id_reconciled = toNonNegInt(pick(
+    diag.subnet_id_reconciled, diag["subnet-id-reconciled"], diag.subnetIdReconciled,
+    st.subnet_id_reconciled, st["subnet-id-reconciled"]
+  ));
+  const cross_network_subnet_switch_blocked = toNonNegInt(pick(
+    diag.cross_network_subnet_switch_blocked, diag["cross-network-subnet-switch-blocked"],
+    st.cross_network_subnet_switch_blocked
+  ));
+  const broadcast_dac_missing = toNonNegInt(pick(
+    diag.broadcast_dac_missing, diag["broadcast-dac-missing"], diag.broadcastDacMissing,
+    st.broadcast_dac_missing, st["broadcast-dac-missing"]
+  ));
+  const broadcast_dac_invalid = toNonNegInt(pick(
+    diag.broadcast_dac_invalid, diag["broadcast-dac-invalid"], diag.broadcastDacInvalid,
+    st.broadcast_dac_invalid, st["broadcast-dac-invalid"]
+  ));
+  const broadcast_sig_invalid = toNonNegInt(pick(
+    diag.broadcast_sig_invalid, diag["broadcast-sig-invalid"], diag.broadcastSigInvalid,
+    st.broadcast_sig_invalid, st["broadcast-sig-invalid"]
+  ));
+  const broadcast_malformed = toNonNegInt(pick(
+    diag.broadcast_malformed, diag["broadcast-malformed"], diag.broadcastMalformed,
+    st.broadcast_malformed
+  ));
+  const session_tx_seq_rollback_detected = toNonNegInt(pick(
+    diag.session_tx_seq_rollback_detected, diag["session-tx-seq-rollback-detected"], diag.sessionTxSeqRollbackDetected,
+    st.session_tx_seq_rollback_detected, st["session-tx-seq-rollback-detected"]
+  ));
+  const session_tx_seq_rollback_evicted = toNonNegInt(pick(
+    diag.session_tx_seq_rollback_evicted, diag["session-tx-seq-rollback-evicted"],
+    st.session_tx_seq_rollback_evicted
+  ));
+  const session_replay_detected = toNonNegInt(pick(
+    diag.session_replay_detected, diag["session-replay-detected"], diag.sessionReplayDetected,
+    st.session_replay_detected, st["session-replay-detected"]
+  ));
+  const session_stale_seq_detected = toNonNegInt(pick(
+    diag.session_stale_seq_detected, diag["session-stale-seq-detected"],
+    st.session_stale_seq_detected
+  ));
+  const session_rx_gap_detected = toNonNegInt(pick(
+    diag.session_rx_gap_detected, diag["session-rx-gap-detected"],
+    st.session_rx_gap_detected
+  ));
+  const session_ack_invalid = toNonNegInt(pick(
+    diag.session_ack_invalid, diag["session-ack-invalid"],
+    st.session_ack_invalid
+  ));
 
   const statusDiag = pick(st.diagnoseEvents, st.diagnose_events, st["diagnose-events"], diag.events);
   const combinedDiag = [];
@@ -485,9 +545,25 @@ function summarizeDeliveryTelemetry(rawStatus, ringEvents) {
     mesh_submitted,
     p2p_direct,
     received_but_not_emitted,
+    connected,
+    transport_healthy,
+    mesh_open_peers,
     meshConnected,
     relayFallbackActive,
+    relay_fallback_active: relayFallbackActive,
     degraded,
+    subnet_id_reconciled,
+    cross_network_subnet_switch_blocked,
+    broadcast_dac_missing,
+    broadcast_dac_invalid,
+    broadcast_sig_invalid,
+    broadcast_malformed,
+    session_tx_seq_rollback_detected,
+    session_tx_seq_rollback_evicted,
+    session_replay_detected,
+    session_stale_seq_detected,
+    session_rx_gap_detected,
+    session_ack_invalid,
     diagnose: boundedDiag
   };
 }
@@ -501,6 +577,125 @@ function recordDiagnoseEvent(ev) {
   }
 }
 
+function recordSessionRekeyRequired(info) {
+  if (!info || typeof info !== "object") return;
+  const sid = String(info.session_id || info.sessionId || info["session-id"] || "").trim();
+  if (!sid) return;
+  const existing = rekeyRequiredSessions.get(sid) || {};
+  rekeyRequiredSessions.set(sid, {
+    sessionId: sid,
+    peer: String(info.peer || existing.peer || ""),
+    localTxSeq: info.local_tx_seq ?? info.localTxSeq ?? existing.localTxSeq ?? null,
+    peerHighSeq: info.peer_high_seq ?? info.peerHighSeq ?? existing.peerHighSeq ?? null,
+    affectedSeqs: Array.isArray(info.affected_seqs || info.affectedSeqs)
+      ? (info.affected_seqs || info.affectedSeqs)
+      : (existing.affectedSeqs || []),
+    rekey_required: true,
+    reoffer_recommended: true,
+    detectedAt: existing.detectedAt || Date.now()
+  });
+}
+
+function syncRekeySessionsFromList(sessions) {
+  if (!Array.isArray(sessions)) return;
+  for (const s of sessions) {
+    if (!s || typeof s !== "object") continue;
+    const sid = s.session_id || s.sessionId || s["session-id"];
+    if (!sid) continue;
+    const tainted = Boolean(s.rekey_required ?? s.rekeyRequired ?? s["rekey-required?"] ?? s.tx_tainted ?? s.txTainted ?? s["tx-tainted?"]);
+    if (tainted) {
+      recordSessionRekeyRequired({
+        session_id: sid,
+        peer: s.peer || s.peerPetname || s.peer_petname || ""
+      });
+    }
+  }
+}
+
+async function initiateX25519Reoffer(peerRaw, oldSessionId) {
+  const peer = String(peerRaw || "").trim();
+  if (!peer) {
+    $("dm-action-status").textContent = "Cannot re-offer: peer pubkey/petname unknown";
+    return { ok: false, error: "missing-peer" };
+  }
+  const api = window.BitechoLightNode;
+  const browser = globalThis.BitechoBrowser;
+  try {
+    $("dm-action-status").textContent = `Initiating fresh X25519 key-rotating offer to ${peer}...`;
+    let res;
+    if (api && typeof api.createOffer === "function") {
+      res = await api.createOffer(peer);
+    } else if (api && typeof api.openChannel === "function") {
+      res = await api.openChannel(peer);
+    } else if (api && typeof api.exec === "function") {
+      res = await api.exec("offer", { callee: peer });
+    } else if (browser && typeof browser.openChannel === "function") {
+      res = browser.openChannel(peer);
+    } else {
+      $("dm-action-status").textContent = "X25519 offer API unavailable";
+      return { ok: false, error: "offer-api-unavailable" };
+    }
+    if (res && res.ok === false) {
+      $("dm-action-status").textContent = `X25519 re-offer failed: ${res.error || "unknown"}`;
+      recordDiagnoseEvent({ reason: "rekey-reoffer-failed", peer, error: res.error || "unknown" });
+      renderDeliveryDiagnosticsDrawer();
+      return res;
+    }
+    const newSid = (res && (res.sessionId || res.session_id || res["session-id"])) || "";
+    if (oldSessionId) {
+      rekeyRequiredSessions.delete(oldSessionId);
+    }
+    $("dm-action-status").textContent = newSid
+      ? `X25519 re-offer sent to ${peer} (new session ${newSid.slice(0, 10)}…)`
+      : `X25519 re-offer sent to ${peer}`;
+    if (newSid) {
+      activeTarget = { kind: "dm", id: newSid };
+      $("channel-header").textContent = `DM Session: ${peer} (${newSid.slice(0, 12)}…)`;
+    }
+    renderRekeyBanner();
+    await refreshSidebar();
+    renderMessages();
+    return res || { ok: true, sessionId: newSid };
+  } catch (e) {
+    const err = (e && e.message) || String(e);
+    $("dm-action-status").textContent = `X25519 re-offer error: ${err}`;
+    recordDiagnoseEvent({ reason: "rekey-reoffer-error", peer, error: err });
+    renderDeliveryDiagnosticsDrawer();
+    return { ok: false, error: err };
+  }
+}
+
+function renderRekeyBanner() {
+  const banner = $("rekey-banner");
+  if (!banner) return;
+  const entries = Array.from(rekeyRequiredSessions.values());
+  if (!entries.length) {
+    banner.classList.remove("open");
+    banner.innerHTML = "";
+    return;
+  }
+  banner.classList.add("open");
+  banner.innerHTML = entries.map((entry) => {
+    const pn = petnamesByPk[entry.peer] || {};
+    const peerLabel = pn.petname || (entry.peer ? `${entry.peer.slice(0, 12)}…` : "peer");
+    const seqDetail = (entry.localTxSeq !== null || entry.peerHighSeq !== null)
+      ? ` (local_tx_seq=${entry.localTxSeq ?? "?"}, peer_high_seq=${entry.peerHighSeq ?? "?"})`
+      : "";
+    return `<div class="rekey-banner-row">
+      <span>
+        <span class="pill live" style="margin-right:6px;">REKEY REQUIRED</span>
+        <strong>Session ${escapeHtml(entry.sessionId.slice(0, 12))}…</strong> with <strong>${escapeHtml(peerLabel)}</strong> is tainted after TX seq rollback${escapeHtml(seqDetail)}. Sending is halted until a fresh X25519 handshake completes.
+      </span>
+      <button type="button" class="btn-reoffer-x25519 primary" data-peer="${escapeHtml(entry.peer)}" data-session-id="${escapeHtml(entry.sessionId)}" style="padding:4px 10px;font-size:0.76rem;">🔄 Initiate X25519 Re-Offer</button>
+    </div>`;
+  }).join("");
+  banner.querySelectorAll(".btn-reoffer-x25519").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      initiateX25519Reoffer(btn.dataset.peer, btn.dataset.sessionId);
+    });
+  });
+}
+
 function renderDeliveryDiagnosticsDrawer(stArg) {
   if (stArg && typeof stArg === "object") {
     deliveryDiagnosticsState.lastStatus = stArg;
@@ -509,11 +704,17 @@ function renderDeliveryDiagnosticsDrawer(stArg) {
     deliveryDiagnosticsState.lastStatus,
     deliveryDiagnosticsState.diagnose
   );
+  const badge = classifyMeshBadge({
+    meshConnected: summary.meshConnected,
+    degraded: summary.degraded,
+    relayFallbackActive: summary.relayFallbackActive,
+    meshOpenPeers: summary.mesh_open_peers,
+    transportHealthy: summary.transport_healthy
+  });
   const btn = $("delivery-diag-btn");
   if (btn) {
     const diagCount = summary.diagnose.length;
     btn.textContent = diagCount > 0 ? `Diagnostics (${diagCount})` : "Diagnostics";
-    const badge = classifyMeshBadge(summary);
     btn.className = badge.state === "live"
       ? "relay-pill ok"
       : (badge.state === "degraded" ? "relay-pill warn" : "relay-pill live");
@@ -521,7 +722,6 @@ function renderDeliveryDiagnosticsDrawer(stArg) {
   const drawer = $("delivery-diag-drawer");
   if (!drawer || !drawer.classList.contains("open")) return;
 
-  const badge = classifyMeshBadge(summary);
   const evictedEntries = Object.entries(summary.evicted_by_reason);
   const evictedStr = evictedEntries.length
     ? evictedEntries.map(([k, v]) => `${k}:${v}`).join(", ")
@@ -533,18 +733,18 @@ function renderDeliveryDiagnosticsDrawer(stArg) {
   const ringLines = summary.diagnose.length
     ? summary.diagnose.slice().reverse().map((ev) => {
       const ts = ev.ts ? new Date(ev.ts).toISOString().slice(11, 19) : "--:--:--";
-      const reason = ev.reason || ev.type || ev.kind || "diagnose";
-      const detail = ev.error || ev.message || ev.detail || "";
+      const reason = ev.reason || ev.type || ev.event || ev.kind || "diagnose";
+      const detail = ev.error || ev.message || ev.detail || (ev.session_id ? `session=${ev.session_id}` : "");
       return `<div>[${escapeHtml(ts)}] <strong>${escapeHtml(reason)}</strong>${detail ? ` — ${escapeHtml(detail)}` : ""}</div>`;
     }).join("")
     : `<div>No :diagnose events recorded yet (ring buffer cap: ${MAX_DIAGNOSE_RING_ENTRIES})</div>`;
 
   drawer.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
-      <strong>BIP-020 Delivery Diagnostics (Pillar 1–4)</strong>
-      <span style="display:flex;align-items:center;gap:8px;">
+      <strong>BIP-020 / BIP-021 Delivery &amp; Integrity Diagnostics</strong>
+      <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span class="${badge.cssClass}">${escapeHtml(badge.label)}</span>
-        <span style="color:var(--muted);">meshConnected: <strong>${summary.meshConnected}</strong> · relayFallbackActive: <strong>${summary.relayFallbackActive}</strong></span>
+        <span style="color:var(--muted);">connected: <strong>${summary.connected}</strong> · transport_healthy: <strong>${summary.transport_healthy}</strong> · mesh_open_peers: <strong>${summary.mesh_open_peers}</strong> · relay_fallback_active: <strong>${summary.relay_fallback_active}</strong></span>
       </span>
     </div>
     <div class="diag-grid">
@@ -555,6 +755,12 @@ function renderDeliveryDiagnosticsDrawer(stArg) {
       <div class="diag-card"><div class="diag-card-label">mesh_submitted</div><div class="diag-card-val">${summary.mesh_submitted}</div></div>
       <div class="diag-card"><div class="diag-card-label">p2p_direct</div><div class="diag-card-val">${summary.p2p_direct}</div></div>
       <div class="diag-card"><div class="diag-card-label">received_but_not_emitted</div><div class="diag-card-val" style="font-size:0.78rem;">${escapeHtml(rneStr)}</div></div>
+      <div class="diag-card"><div class="diag-card-label">subnet_id_reconciled</div><div class="diag-card-val">${summary.subnet_id_reconciled}</div></div>
+      <div class="diag-card"><div class="diag-card-label">broadcast_dac_missing</div><div class="diag-card-val">${summary.broadcast_dac_missing}</div></div>
+      <div class="diag-card"><div class="diag-card-label">broadcast_dac_invalid</div><div class="diag-card-val">${summary.broadcast_dac_invalid}</div></div>
+      <div class="diag-card"><div class="diag-card-label">broadcast_sig_invalid</div><div class="diag-card-val">${summary.broadcast_sig_invalid}</div></div>
+      <div class="diag-card"><div class="diag-card-label">session_tx_seq_rollback_detected</div><div class="diag-card-val">${summary.session_tx_seq_rollback_detected}</div></div>
+      <div class="diag-card"><div class="diag-card-label">session_replay_detected</div><div class="diag-card-val">${summary.session_replay_detected}</div></div>
     </div>
     <div class="diag-ring">${ringLines}</div>
   `;
@@ -564,6 +770,8 @@ window.__HIVE_DELIVERY_DIAGNOSTICS__ = {
   classifyMeshBadge,
   classifyOutboundDeliveryStatus,
   summarizeDeliveryTelemetry,
+  initiateX25519Reoffer,
+  getRekeyRequiredSessions: () => Array.from(rekeyRequiredSessions.values()),
   getSummary: () => summarizeDeliveryTelemetry(deliveryDiagnosticsState.lastStatus, deliveryDiagnosticsState.diagnose)
 };
 
@@ -1493,13 +1701,17 @@ function renderLists(subnets, sessions, petnames) {
   const effectiveSubnets = mergedSubnetsList(subnets);
   $("subnet-list").innerHTML = effectiveSubnets
     .map(s => `<div class="list-item ${activeTarget.kind === "subnet" && activeTarget.id === s ? "active" : ""}" data-kind="subnet" data-id="${s}"><span># ${s}</span></div>`).join("");
+  syncRekeySessionsFromList(sessions);
+  renderRekeyBanner();
   $("session-list").innerHTML = sessions.map(s => {
     const label = s.peerPetname || s.peer_petname || (s.sessionId || s.session_id || "").slice(0, 12);
     const sid = s.sessionId || s.session_id;
     const col = s.color || colorForKey(label);
     const stateStr = String(s.state || s.status || "open").toLowerCase();
-    const pillCls = stateStr === "open" ? "ok" : (stateStr === "offered" ? "warn" : "");
-    return `<div class="list-item ${activeTarget.kind === "dm" && activeTarget.id === sid ? "active" : ""}" data-kind="dm" data-id="${sid}"><span><span class="dot" style="background:${col}"></span>${label}</span><span class="pill ${pillCls}" style="font-size:0.65rem;padding:1px 6px;">${stateStr}</span></div>`;
+    const needsRekey = Boolean(s.rekey_required ?? s.rekeyRequired ?? s.tx_tainted ?? s.txTainted ?? rekeyRequiredSessions.has(sid));
+    const pillCls = needsRekey ? "live" : (stateStr === "open" ? "ok" : (stateStr === "offered" ? "warn" : ""));
+    const pillTxt = needsRekey ? "rekey required" : stateStr;
+    return `<div class="list-item ${activeTarget.kind === "dm" && activeTarget.id === sid ? "active" : ""}" data-kind="dm" data-id="${sid}"><span><span class="dot" style="background:${col}"></span>${label}</span><span class="pill ${pillCls}" style="font-size:0.65rem;padding:1px 6px;">${pillTxt}</span></div>`;
   }).join("") || `<div style="font-size:0.78rem;color:var(--muted);">No active DM sessions yet</div>`;
 
   $("petname-list").innerHTML = petnames.map(p => {
@@ -1631,14 +1843,23 @@ async function refreshNodeBadge(stArg) {
     $("node-id-badge").style.display = "inline-block";
     $("node-id-badge").textContent = `pubkey: ${pk.slice(0, 12)}… · bal: ${Number(bal).toLocaleString()} ECH`;
   }
-  const meshConnected = Boolean(st.meshConnected ?? st.mesh_connected ?? st["mesh-connected?"]);
+  const rawOpenPeers = st.meshOpenPeers ?? st.mesh_open_peers ?? st["mesh-open-peers"];
+  const meshOpenPeers = (typeof rawOpenPeers === "number" && Number.isFinite(rawOpenPeers))
+    ? rawOpenPeers
+    : (Array.isArray(st.connectedNodes) ? st.connectedNodes.length : undefined);
+  const meshConnected = Boolean(st.meshConnected ?? st.mesh_connected ?? st["mesh-connected?"] ?? (typeof meshOpenPeers === "number" ? meshOpenPeers > 0 : false));
+  const transportHealthy = st.transportHealthy ?? st.transport_healthy ?? st["transport-healthy?"];
   const degraded = Boolean(st.degraded ?? st["degraded?"]);
   const relayFallbackActive = Boolean(st.relayFallbackActive ?? st.relay_fallback_active ?? st["relay-fallback-active?"]);
-  const badge = classifyMeshBadge({ meshConnected, degraded, relayFallbackActive });
-  const ver = (api && api.version) || "0.23.19";
+  const badge = classifyMeshBadge({ meshConnected, degraded, relayFallbackActive, meshOpenPeers, transportHealthy });
+  const ver = (api && api.version) || "0.23.21";
   const apiVer = (api && api.apiVersion) || "1.1.0";
   $("api-badge").textContent = `BitechoLightNode v${apiVer} ${badge.label} (${ver})`;
   $("api-badge").className = badge.cssClass;
+  if (Array.isArray(st.sessions)) {
+    syncRekeySessionsFromList(st.sessions);
+    renderRekeyBanner();
+  }
   updateRelayHealthPill(st);
   renderDeliveryDiagnosticsDrawer(st);
 }
@@ -1671,6 +1892,25 @@ function applyDeliveryOutcomeEvent(ev) {
   renderDeliveryDiagnosticsDrawer();
 }
 
+function getBootInitOpts() {
+  const urlParams = (typeof URLSearchParams !== "undefined" && window.location)
+    ? new URLSearchParams(window.location.search)
+    : null;
+  const explicitUrlSubnet = urlParams && (urlParams.get("explicitSubnetId") || urlParams.get("subnet") || "").trim();
+  const opts = {
+    defaultSubnetId: "devnet.bitecho.org",
+    relayUrls: [
+      "https://ns1.bitecho.org",
+      "https://ns2.bitecho.org",
+      "https://ns3.bitecho.org"
+    ]
+  };
+  if (explicitUrlSubnet) {
+    opts.explicitSubnetId = explicitUrlSubnet;
+  }
+  return opts;
+}
+
 async function connectNode() {
   unlockAudioSync();
   const api = window.BitechoLightNode;
@@ -1684,14 +1924,7 @@ async function connectNode() {
   $("api-badge").className = "pill warn";
   try {
     node = api;
-    const initOpts = {
-      subnetId: "devnet.bitecho.org",
-      relayUrls: [
-        "https://ns1.bitecho.org",
-        "https://ns2.bitecho.org",
-        "https://ns3.bitecho.org"
-      ]
-    };
+    const initOpts = getBootInitOpts();
     // IMPORTANT: Never call initNode() if already booted / restored from IndexedDB or YubiKey,
     // because initNode() generates a fresh ephemeral keypair and clobbers the Anchor Identity!
     const existing = api.getStatus ? await api.getStatus() : ((browser && browser.getStatus) ? browser.getStatus() : null);
@@ -1725,6 +1958,19 @@ async function connectNode() {
         if (!ev) return;
         if (ev.type === "diagnose") {
           recordDiagnoseEvent(ev);
+          renderDeliveryDiagnosticsDrawer();
+          return;
+        }
+        if (ev.type === "session-seq-mismatch" || ev.event === "session-seq-mismatch" || ev.rekey_required === true || ev.rekeyRequired === true) {
+          recordSessionRekeyRequired(ev);
+          recordDiagnoseEvent(Object.assign({ reason: "session-seq-mismatch" }, ev));
+          renderRekeyBanner();
+          renderDeliveryDiagnosticsDrawer();
+          refreshSidebar();
+          return;
+        }
+        if (ev.type === "session-replay-detected" || ev.type === "broadcast-rejected" || ev.type === "subnet-id-reconciled") {
+          recordDiagnoseEvent(Object.assign({ reason: ev.reason || ev.type }, ev));
           renderDeliveryDiagnosticsDrawer();
           return;
         }
@@ -1805,6 +2051,13 @@ async function sendCurrentMessage() {
     seenMessageKeys.add(dk);
     messageLog.push(ownEv);
     renderMessages();
+  }
+  if (res && (res.error === "session-key-tainted-rollback" || res.rekey_required === true || res.rekeyRequired === true)) {
+    recordSessionRekeyRequired({
+      session_id: res.session_id || res.sessionId || activeTarget.id,
+      peer: res.peer || ""
+    });
+    renderRekeyBanner();
   }
   if (!res || res.ok === false || deliveryStatus === "rejected" || deliveryStatus === "evicted") {
     const err = deliveryError || "send-failed";
@@ -2108,7 +2361,7 @@ $("btn-rolodex-put").addEventListener("click", async () => {
     : `Rolodex put: ${(res && res.error) || "unavailable"}`;
   await refreshRolodexStatus();
 });
-async function subscribeSubnet(subRaw) {
+async function subscribeSubnet(subRaw, opts = {}) {
   const sub = String(subRaw || "").trim();
   if (!sub) return;
   saveCustomSubnet(sub);
@@ -2116,6 +2369,15 @@ async function subscribeSubnet(subRaw) {
   if (node && typeof node.exec === "function") {
     try {
       await node.exec("subscribe-subnets", { subnets: allSubs.join(",") });
+    } catch (_) {}
+  }
+  if (opts.explicitSwitch && node && typeof node.reconnect === "function") {
+    try {
+      await node.reconnect({
+        explicitSubnetId: sub,
+        relayUrls: DEFAULT_RELAY_URLS,
+        ...(opts.resetNetworkState ? { resetNetworkState: true } : {})
+      });
     } catch (_) {}
   }
   activeTarget = { kind: "subnet", id: sub };
@@ -2158,14 +2420,7 @@ if (window.BitechoLightNode) {
 if (globalThis.BitechoBrowser) {
   const b = globalThis.BitechoBrowser;
   if (b.initNode) {
-    b.initNode({
-      subnetId: "devnet.bitecho.org",
-      relayUrls: [
-        "https://ns1.bitecho.org",
-        "https://ns2.bitecho.org",
-        "https://ns3.bitecho.org"
-      ]
-    });
+    b.initNode(getBootInitOpts());
   }
   const initialDash = b.initAnchor ? b.initAnchor() : null;
   refreshAnchorUI(initialDash);
