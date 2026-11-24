@@ -422,9 +422,9 @@
           (is (not (str/includes? chat-js "LIVE (${api.version"))))
 
         (testing "BIP-021: Stage 3 SRI pin, defaultSubnetId/explicitSubnetId, rekey banner, and honest liveness/diagnostics"
-          (is (= "sha384-Djk2V6bjsgQe3mB7p+Zu3bw902aEaUMIsbkr6ccbVs9+MubrrD4m4HGmfAsX+2j4"
+          (is (= "sha384-Ixq4hE2jwVPSKJUKQSGJXy86UwRSoT7ydszzUl+C1VF8a1cUBeuGttkriHVJmvf6"
                  viz/browser-bundle-sri))
-          (is (str/includes? index-html "sha384-Djk2V6bjsgQe3mB7p+Zu3bw902aEaUMIsbkr6ccbVs9+MubrrD4m4HGmfAsX+2j4"))
+          (is (str/includes? index-html "sha384-Ixq4hE2jwVPSKJUKQSGJXy86UwRSoT7ydszzUl+C1VF8a1cUBeuGttkriHVJmvf6"))
           (is (str/includes? index-html "id=\"rekey-banner\""))
           (is (str/includes? chat-js "defaultSubnetId: \"devnet.bitecho.org\""))
           (is (str/includes? chat-js "explicitSubnetId"))
