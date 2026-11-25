@@ -6,6 +6,7 @@
             [bitecho.hive.rl-env-test]
             [bitecho.hive.rolling-upgrade-sim-test]
             [bitecho.hive.seed-to-round-test]
+            [bitecho.hive.sim-fabric-test]
             [bitecho.hive.top-loop-test]
             [bitecho.hive.trace-viz-test]
             [bitecho.hive.twin-stage1-test]
@@ -19,6 +20,7 @@
    'bitecho.hive.top-loop-test
    'bitecho.hive.genesis-test
    'bitecho.hive.seed-to-round-test
+   'bitecho.hive.sim-fabric-test
    'bitecho.hive.trace-viz-test
    'bitecho.hive.twin-stage1-test])
 
