@@ -183,3 +183,74 @@
              (:mean-monthly-gmv-ech (get by-agents 1500))))
       (is (< (:mean-monthly-gmv-ech (get by-agents 1500))
              (:mean-monthly-gmv-ech (get by-agents 2700)))))))
+
+;; =============================================================================
+;; V4 Strict-TDD Tests: Reach-to-Crossover Frontier & M1 Hurdle Contrast
+;; =============================================================================
+
+(defspec ^{:doc "V4 reach-crossover-frontier conserves 42B ECHO on every cell and scales mean-monthly-gmv-ech monotonically in both active-agents and monthly-gmv-per-agent."}
+  prop-v4-reach-crossover-frontier-monotonicity-and-42b-conservation 12
+  (prop/for-all [k-bps (gen/elements [2500 5000])
+                 tau-bps (gen/elements [25 50])]
+                (let [trial {:scenario :reseller-saas-reach-growth
+                             :seed 20261124
+                             :time-compression-factor 72
+                             :epochs 450
+                             :cleared-gmv-ech 10800000
+                             :market-burned-ech 54000
+                             :per-capability-gmv-ech {:llm-inference 3600000
+                                                      :saas-api-call 2700000
+                                                      :web-search-extract 1800000
+                                                      :sandbox-compute 1800000
+                                                      :bandwidth-bytes-in-motion 900000}
+                             :per-subnet-gmv-ech {"root/markets/larg-tac" 4000000
+                                                  "root/markets/midi-sim" 3000000
+                                                  "root/markets/clear-games" 2000000
+                                                  "root/markets/trustx-verify" 1800000}
+                             :partner-vesting {:partner-larg-tac {:vested-ech 360000000 :vested-claims 32 :paused-claims 0}}
+                             :g4-angels {:onboarded? true :seed-closed? true :anchor-threshold 2}
+                             :protocol-infra {:upgrades-executed 15 :upgrade-stalls 0 :rotations-verified 7}}
+                      f (s2r/reach-crossover-frontier
+                         {:trial-telemetry trial
+                          :active-agent-grid [500 5000 50000]
+                          :monthly-gmv-per-agent-grid [10000 100000]
+                          :k-bps k-bps
+                          :tau-bps tau-bps})
+                      by-pair (into {} (map (fn [c] [[(:active-agents c) (:monthly-gmv-per-agent-ech c)] c])
+                                            (:cells f)))]
+                  (and (true? (:all-conserved? f))
+                       (= 6 (count (:cells f)))
+                       (every? :all-months-conserved? (:cells f))
+                       (< (:mean-monthly-gmv-ech (get by-pair [500 10000]))
+                          (:mean-monthly-gmv-ech (get by-pair [5000 10000])))
+                       (< (:mean-monthly-gmv-ech (get by-pair [5000 10000]))
+                          (:mean-monthly-gmv-ech (get by-pair [50000 10000])))
+                       (< (:mean-monthly-gmv-ech (get by-pair [5000 10000]))
+                          (:mean-monthly-gmv-ech (get by-pair [5000 100000])))))))
+
+(deftest unit-v4-reseller-saas-reach-growth-frontier-and-m1-hurdle-contrast
+  (testing "V4 endogenous scale sweep & reach-crossover-frontier for :reseller-saas-reach-growth identify 164M/mo GMV, deflationary crossover, and explicitly contrast realistic 100M burn vs legacy 1.5B burn Series-A hurdles (M1)"
+    (let [trial (lifecycle/run-full-network-trial
+                 {:scenario :reseller-saas-reach-growth
+                  :seed 20261124
+                  :time-compression-factor 144
+                  :epochs 230})
+          sweep (s2r/run-endogenous-scale-sweep
+                 {:trial-telemetry trial
+                  :target-agent-counts [550 1500 2700]})
+          frontier (:reach-crossover-frontier sweep)]
+      (is (true? (:all-conserved? sweep)))
+      (is (map? frontier))
+      (is (true? (:all-conserved? frontier)))
+      (is (some? (:min-pair-for-164m-monthly-gmv frontier)))
+      (is (some? (:min-pair-for-realistic-100m-a-round frontier)))
+      (is (some? (:min-pair-for-deflationary-crossover frontier)))
+      (is (some? (:min-pair-for-legacy-1.5b-a-round frontier)))
+      ;; Realistic 100M burn hurdle is strictly easier (lower required monthly GMV) than legacy 1.5B burn hurdle
+      (is (< (long (get-in frontier [:min-pair-for-realistic-100m-a-round :mean-monthly-gmv-ech]))
+             (long (get-in frontier [:min-pair-for-legacy-1.5b-a-round :mean-monthly-gmv-ech]))))
+      ;; Each result in sweep exposes explicit M1 hurdle contrast
+      (doseq [r (:results sweep)]
+        (is (map? (:a-round-hurdle-comparison r)))
+        (is (= 1500000000 (get-in r [:a-round-hurdle-comparison :legacy-1.5b-burn-hurdle :min-cumulative-burn-ech])))
+        (is (= 100000000 (get-in r [:a-round-hurdle-comparison :realistic-early-stage-hurdle :min-cumulative-burn-ech])))))))

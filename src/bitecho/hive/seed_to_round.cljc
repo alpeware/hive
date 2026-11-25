@@ -548,6 +548,18 @@
   "Reference micro-cohort node count in `bitecho.hive.sim.lifecycle` (6 infra + 2 home + 17 light)."
   25)
 
+(def ^:const COMMERCIAL-GMV-MILESTONE-MONTHLY-ECH
+  "164M ECHO/mo commercial GMV milestone."
+  164000000)
+
+(def ^:const REALISTIC-A-ROUND-BURN-HURDLE
+  "Realistic early-stage Series-A cumulative burn hurdle (100M ECHO burn = 20B ECHO 36m GMV at 50 bps, >$10M+ ARR)."
+  100000000)
+
+(def ^:const LEGACY-A-ROUND-BURN-HURDLE
+  "Legacy Series-A cumulative burn hurdle (1.5B ECHO burn = 300B ECHO 36m GMV at 50 bps)."
+  1500000000)
+
 (defn- build-endogenous-monthly-series
   "Extracts or synthesizes the 36-month endogenous market series from `trial-telemetry`.
    Uses exact `:monthly-market-telemetry` when present; otherwise derives an even 36-month
@@ -638,8 +650,15 @@
                                (:angels-onboarded? st)
                                (:seed-closed? st)
                                (>= (long (:fleet-nodes st)) 60)
-                               (>= (long (:cumulative-burned-revenue st)) 1500000000)
+                               (>= (long (:cumulative-burned-revenue st)) LEGACY-A-ROUND-BURN-HURDLE)
                                (<= (long (:rollbacks st)) 4))
+              realistic-a-round-ok? (and all-conserved?
+                                         (:angels-onboarded? st)
+                                         (:seed-closed? st)
+                                         (>= (long (:fleet-nodes st)) 60)
+                                         (>= (long (:cumulative-burned-revenue st)) REALISTIC-A-ROUND-BURN-HURDLE)
+                                         (<= (long (:rollbacks st)) 4))
+              reached-164m? (>= mean-monthly-gmv (double COMMERCIAL-GMV-MILESTONE-MONTHLY-ECH))
               root-cid (env/sha256-str (pr-str {:spec-cid genesis/GENESIS-SPEC-CID
                                                 :scenario (:scenario trial-telemetry)
                                                 :seed (:seed trial-telemetry)
@@ -660,6 +679,17 @@
            :tau-bps tau-clamped
            :all-months-conserved? all-conserved?
            :a-round-qualified? a-round-ok?
+           :a-round-qualified-realistic-100m? realistic-a-round-ok?
+           :reached-164m-monthly-gmv? reached-164m?
+           :a-round-hurdle-comparison
+           {:legacy-1.5b-burn-hurdle
+            {:min-cumulative-burn-ech LEGACY-A-ROUND-BURN-HURDLE
+             :implied-36m-gmv-at-50bps (* LEGACY-A-ROUND-BURN-HURDLE 200)
+             :qualified? a-round-ok?}
+            :realistic-early-stage-hurdle
+            {:min-cumulative-burn-ech REALISTIC-A-ROUND-BURN-HURDLE
+             :implied-36m-gmv-at-50bps (* REALISTIC-A-ROUND-BURN-HURDLE 200)
+             :qualified? realistic-a-round-ok?}}
            :angels-onboarded? (:angels-onboarded? st)
            :seed-closed? (:seed-closed? st)
            :final-fleet-nodes (:fleet-nodes st)
@@ -787,10 +817,69 @@
                          :first-deflationary-month first-defl-m)]
           (recur (inc m) st' (conj rev-hist r-burned) (conj trace snap)))))))
 
+(defn reach-crossover-frontier
+  "V4 Reach-to-Crossover Frontier: evaluates `(active-agents, monthly-gmv-per-agent-ech)` pairs
+   on the endogenous monthly GMV shape from `trial-telemetry`, preserving exact 42B ECHO
+   conservation on every cell and identifying minimal pairs achieving:
+   - `164M ECHO/mo` commercial GMV milestone,
+   - Realistic early-stage `100M` burn / `$10M+ ARR` commercial GMV Series-A hurdle,
+   - Deflationary crossover (`first-deflationary-month`), and
+   - Legacy `1.5B` burn Series-A hurdle (explicitly contrasting M1)."
+  [{:keys [trial-telemetry active-agent-grid monthly-gmv-per-agent-grid
+           k-bps tau-bps bootstrap-drawdown-rate]
+    :or {active-agent-grid [500 2500 10000 50000 250000 1000000]
+         monthly-gmv-per-agent-grid [5000 20000 50000 150000 500000]
+         k-bps 5000
+         tau-bps 50
+         bootstrap-drawdown-rate 0.045}}]
+  (let [monthly-series (build-endogenous-monthly-series trial-telemetry)
+        base-tot-gmv (max 1 (reduce + 0 (map #(long (or (:cleared-gmv-ech %) 0)) monthly-series)))
+        base-mean-monthly (/ (double base-tot-gmv) 36.0)
+        cells (vec
+               (for [n-agents active-agent-grid
+                     gmv-per-agent monthly-gmv-per-agent-grid]
+                 (let [target-monthly (* (double n-agents) (double gmv-per-agent))
+                       scale (max 0.01 (/ target-monthly base-mean-monthly))
+                       res (run-endogenous-seed-to-round
+                            {:trial-telemetry trial-telemetry
+                             :target-active-agents n-agents
+                             :agent-scale-multiplier scale
+                             :k-bps k-bps
+                             :tau-bps tau-bps
+                             :bootstrap-drawdown-rate bootstrap-drawdown-rate})]
+                   {:active-agents (long n-agents)
+                    :monthly-gmv-per-agent-ech (long gmv-per-agent)
+                    :mean-monthly-gmv-ech (:mean-monthly-gmv-ech res)
+                    :cumulative-burned-revenue (:cumulative-burned-revenue res)
+                    :first-deflationary-month (:first-deflationary-month res)
+                    :reached-164m-monthly-gmv? (:reached-164m-monthly-gmv? res)
+                    :deflationary-crossover? (some? (:first-deflationary-month res))
+                    :a-round-qualified-realistic-100m? (:a-round-qualified-realistic-100m? res)
+                    :a-round-qualified-legacy-1.5b? (:a-round-qualified? res)
+                    :all-months-conserved? (:all-months-conserved? res)})))
+        min-matching (fn [pred]
+                       (first (sort-by (juxt :mean-monthly-gmv-ech :active-agents :monthly-gmv-per-agent-ech)
+                                       (filter pred cells))))]
+    {:spec-cid genesis/GENESIS-SPEC-CID
+     :scenario (:scenario trial-telemetry)
+     :seed (:seed trial-telemetry)
+     :k-bps (long k-bps)
+     :tau-bps (long tau-bps)
+     :active-agent-grid (vec active-agent-grid)
+     :monthly-gmv-per-agent-grid (vec monthly-gmv-per-agent-grid)
+     :all-conserved? (every? :all-months-conserved? cells)
+     :min-pair-for-164m-monthly-gmv (min-matching :reached-164m-monthly-gmv?)
+     :min-pair-for-realistic-100m-a-round (min-matching :a-round-qualified-realistic-100m?)
+     :min-pair-for-deflationary-crossover (min-matching :deflationary-crossover?)
+     :min-pair-for-legacy-1.5b-a-round (min-matching :a-round-qualified-legacy-1.5b?)
+     :cells cells}))
+
 (defn run-endogenous-scale-sweep
   "Sweeps `run-endogenous-seed-to-round` across a vector of target autonomous-agent fleet
-   sizes (default `[550 1500 2700]` active autonomous agents) from a single lifecycle trial."
-  [{:keys [trial-telemetry target-agent-counts k-bps tau-bps bootstrap-drawdown-rate]
+   sizes (default `[550 1500 2700]` active autonomous agents) from a single lifecycle trial,
+   and computes the V4 `reach-crossover-frontier`."
+  [{:keys [trial-telemetry target-agent-counts k-bps tau-bps bootstrap-drawdown-rate
+           active-agent-grid monthly-gmv-per-agent-grid]
     :or {target-agent-counts [550 1500 2700]
          k-bps 5000
          tau-bps 50
@@ -802,10 +891,19 @@
                           :k-bps k-bps
                           :tau-bps tau-bps
                           :bootstrap-drawdown-rate bootstrap-drawdown-rate}))
-                      target-agent-counts)]
+                      target-agent-counts)
+        frontier (reach-crossover-frontier
+                  (cond-> {:trial-telemetry trial-telemetry
+                           :k-bps k-bps
+                           :tau-bps tau-bps
+                           :bootstrap-drawdown-rate bootstrap-drawdown-rate}
+                    active-agent-grid (assoc :active-agent-grid active-agent-grid)
+                    monthly-gmv-per-agent-grid (assoc :monthly-gmv-per-agent-grid monthly-gmv-per-agent-grid)))]
     {:spec-cid genesis/GENESIS-SPEC-CID
      :scenario (:scenario trial-telemetry)
      :seed (:seed trial-telemetry)
      :target-agent-counts (vec target-agent-counts)
-     :all-conserved? (every? :all-months-conserved? results)
-     :results results}))
+     :all-conserved? (and (every? :all-months-conserved? results)
+                          (true? (:all-conserved? frontier)))
+     :results results
+     :reach-crossover-frontier frontier}))

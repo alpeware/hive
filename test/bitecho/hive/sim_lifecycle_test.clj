@@ -203,13 +203,13 @@
 ;; =============================================================================
 
 (deftest multi-scenario-crn-sweep-test
-  (testing "All 5 canonical scenarios execute cleanly with exact 42B conservation, zero failed receipts, and expected comparative dynamics"
+  (testing "All 6 canonical scenarios execute cleanly with exact 42B conservation, zero failed receipts, and expected comparative dynamics"
     (let [sweep (lifecycle/run-scenario-sweep
                  {:scenarios lifecycle/all-scenarios
                   :seeds [20261124]
                   :time-compression-factor 144
                   :epochs 230})]
-      (is (= 5 (count (:results sweep))))
+      (is (= 6 (count (:results sweep))))
       (doseq [r (:results sweep)]
         (is (true? (:all-epochs-conserved? r)) (str "Conservation failed in " (:scenario r)))
         (is (= 0 (:failed-receipts-count r)) (str "Unexpected failed receipts in " (:scenario r)))
@@ -256,3 +256,48 @@
       (is (= :unanchored-calibration-param (get-in res [:calibration-anchors :formal-verify :price-anchor-status])))
       ;; 36-month endogenous monthly telemetry for seed_to_round piping
       (is (= 36 (count (:monthly-market-telemetry res)))))))
+
+;; =============================================================================
+;; V4 Strict-TDD Tests: M2/M3 Telemetry, Resellers, SaaS Agents & Reach Growth
+;; =============================================================================
+
+(deftest v4-m2-m3-telemetry-and-reseller-saas-reach-growth-test
+  (testing "V4 :reseller-saas-reach-growth surfaces M2/M3 telemetry, reseller accounting, :saas-api-call + intra/cross split, Reach growth, 0 failed receipts, [0 0 0] builder cashflow deltas, and exact 42B conservation"
+    (let [res (lifecycle/run-full-network-trial
+               {:scenario :reseller-saas-reach-growth
+                :seed 20261124
+                :time-compression-factor 72
+                :epochs 450})
+          cleared-gmv (long (:cleared-gmv-ech res))
+          fv-gmv (long (get-in res [:per-capability-gmv-ech :formal-verify] 0))
+          ws-gmv (long (get-in res [:per-capability-gmv-ech :web-search-extract] 0))
+          ws-brk (:web-search-meter-breakdown res)]
+      ;; Core conservation & zero failed receipts
+      (is (true? (:all-epochs-conserved? res)))
+      (is (= 0 (:failed-receipts-count res)))
+      (is (= [0 0 0] (mapv #(get-in res [:builder-cashflow % :identity-delta-ech])
+                           [:builder-larg-1 :builder-larg-2 :builder-larg-3])))
+      ;; M2: ex-formal-verify GMV & formal-verify share pct
+      (is (= (- cleared-gmv fv-gmv) (:ex-formal-verify-gmv-ech res)))
+      (is (<= 0.0 (double (:formal-verify-share-pct res)) 100.0))
+      ;; M3: failover utility gamma, failover-insured orders & web-search meter breakdown
+      (is (= 0.15 (:failover-utility-gamma res)))
+      (is (pos? (:failover-insured-orders res)))
+      (is (<= (:failover-insured-orders res) (:cleared-orders res)))
+      (is (map? ws-brk))
+      (is (= ws-gmv (+ (long (:query-ech ws-brk 0))
+                       (long (:extract-ech ws-brk 0))
+                       (long (:freshness-egress-ech ws-brk 0)))))
+      ;; Reseller accounting
+      (is (pos? (:reseller-gmv-ech res)))
+      (is (pos? (:reseller-upstream-cost-ech res)))
+      (is (>= (:reseller-gmv-ech res)
+              (+ (:reseller-upstream-cost-ech res) (:reseller-net-margin-ech res))))
+      ;; SaaS-agent & intra-company vs cross-company split
+      (is (pos? (get-in res [:per-capability-gmv-ech :saas-api-call] 0)))
+      (is (pos? (:intra-company-events res)))
+      (is (pos? (:cross-company-cleared-orders res)))
+      ;; Reach growth & endogenous provider entry
+      (is (pos? (:endogenous-providers-entered res)))
+      (is (pos? (get-in res [:reach-growth :mealy-native-agents] 0)))
+      (is (pos? (get-in res [:reach-growth :oss-harness-agents] 0))))))

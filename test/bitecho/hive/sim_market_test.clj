@@ -596,3 +596,138 @@
       (is (= 550 (get-in cf [:builder-larg-2 :buyer-spend-ech])))
       (is (pos? (get-in cf [:builder-larg-1 :subnet-fees-paid-ech])))
       (is (pos? (get-in cf [:builder-larg-1 :protocol-burns-paid-ech]))))))
+
+;; =============================================================================
+;; V4 Strict-TDD Tests: M3 Telemetry, Reseller Accounting & SaaS-Agent Traffic
+;; =============================================================================
+
+(defspec ^{:doc "V4 M3: split-web-search-meters partitions any non-negative gross-ech into query + extract + freshness-egress summing exactly to gross-ech."}
+  v4-web-search-meter-breakdown-exact-sum-prop 40
+  (prop/for-all [gross (gen/choose 0 1000000)]
+                (let [{:keys [query-ech extract-ech freshness-egress-ech]} (market/split-web-search-meters gross)]
+                  (and (>= query-ech 0)
+                       (>= extract-ech 0)
+                       (>= freshness-egress-ech 0)
+                       (= (long gross) (+ query-ech extract-ech freshness-egress-ech))))))
+
+(defspec ^{:doc "V4 Reseller accounting conserves 42B ECHO, produces 0 failed receipts, and satisfies reseller-gmv >= reseller-upstream-cost + reseller-net-margin."}
+  v4-reseller-accounting-and-42b-conservation-prop 12
+  (prop/for-all [seed (gen/choose 1 100000)
+                 unit-price (gen/choose 100 2000)
+                 units (gen/choose 1 5)
+                 margin-bps (gen/elements [500 600])]
+                (let [fab0 (fabric/init-fabric {:seed seed})
+                      buyer-pk (get-in fab0 [:light-nodes :builder-larg-1 :pubkey-hex])
+                      prov-pk (get-in fab0 [:light-nodes :builder-larg-2 :pubkey-hex])
+                      treas-pk (get-in fab0 [:light-nodes :partner-larg-tac :pubkey-hex])
+                      m0 (-> (market/init-market-state {:seed seed
+                                                        :subnet-fee-bps 100
+                                                        :subnet-treasuries {"root/markets/larg-tac" treas-pk}})
+                             (market/register-offer {:offer-id "offer-reseller-or"
+                                                     :capability-type :llm-inference
+                                                     :provider-role :reseller
+                                                     :upstream-vendor :openrouter
+                                                     :reseller-margin-bps margin-bps
+                                                     :unit-price-ech unit-price
+                                                     :marginal-cost-ech 80
+                                                     :capacity-units-per-epoch 10
+                                                     :provider-id :builder-larg-2
+                                                     :provider-pubkey prov-pk
+                                                     :subnet-id "root/markets/larg-tac"
+                                                     :attested-sla-bps 9600
+                                                     :true-delivery-prob 1.0}))
+                      req {:request-id "req-res-1" :request-seq 1 :epoch 1
+                           :buyer-id :builder-larg-1 :buyer-pubkey buyer-pk
+                           :capability-type :llm-inference :units units
+                           :max-wtp-ech (* 2 unit-price) :min-sla-bps 8000
+                           :budget-ech (* unit-price units)}
+                      cl (market/clear-market-epoch m0 [req] {:epoch 1})
+                      st (market/settle-cleared-batches fab0 (:market cl) (:cleared cl)
+                                                        {:epoch 1 :escrow-ttl-epochs 3 :subnet-fee-bps 100})
+                      mkt (:market st)
+                      fab (:fabric st)
+                      gross (* unit-price units)
+                      r-gmv (long (:reseller-gmv-ech mkt 0))
+                      r-up (long (:reseller-upstream-cost-ech mkt 0))
+                      r-net (long (:reseller-net-margin-ech mkt 0))]
+                  (and (:ok? (fabric/verify-fabric-conservation fab))
+                       (= 0 (get-in fab [:state :failed-receipts-count] 0))
+                       (= gross r-gmv)
+                       (pos? r-up)
+                       (>= r-net 0)
+                       (>= r-gmv (+ r-up r-net))))))
+
+(deftest v4-saas-api-call-and-intra-vs-cross-company-split-test
+  (testing "V4 catalog includes :saas-api-call, and clear-market-epoch separates zero-burn :intra-company collaboration from commercial :cross-company HTLC orders"
+    (is (contains? market/capability-catalog :saas-api-call))
+    (is (contains? market/capability-calibration-anchors :saas-api-call))
+    (is (= :per-task-escrow (get-in market/capability-catalog [:saas-api-call :billing-model])))
+    (is (= 100 (reduce + 0 (vals market/capability-demand-weights))))
+    (let [fab0 (fabric/init-fabric {:seed 405})
+          b-pk (get-in fab0 [:light-nodes :builder-larg-1 :pubkey-hex])
+          p-pk (get-in fab0 [:light-nodes :builder-larg-2 :pubkey-hex])
+          treas-pk (get-in fab0 [:light-nodes :partner-larg-tac :pubkey-hex])
+          m0 (-> (market/init-market-state {:seed 405
+                                            :subnet-fee-bps 100
+                                            :subnet-treasuries {"root/markets/larg-tac" treas-pk}})
+                 (market/register-offer {:offer-id "offer-saas-1"
+                                         :capability-type :saas-api-call
+                                         :provider-role :saas-agent
+                                         :unit-price-ech 130
+                                         :marginal-cost-ech 30
+                                         :capacity-units-per-epoch 1
+                                         :provider-id :builder-larg-2
+                                         :provider-pubkey p-pk
+                                         :subnet-id "root/markets/larg-tac"
+                                         :attested-sla-bps 9600
+                                         :true-delivery-prob 1.0}))
+          reqs [{:request-id "req-intra-1" :request-seq 1 :epoch 1
+                 :traffic-scope :intra-company
+                 :buyer-id :builder-larg-1 :buyer-pubkey b-pk
+                 :capability-type :saas-api-call :units 1
+                 :max-wtp-ech 200 :min-sla-bps 8000 :budget-ech 200}
+                {:request-id "req-cross-1" :request-seq 2 :epoch 1
+                 :traffic-scope :cross-company
+                 :buyer-id :builder-larg-1 :buyer-pubkey b-pk
+                 :capability-type :saas-api-call :units 1
+                 :max-wtp-ech 200 :min-sla-bps 8000 :budget-ech 200}]
+          cl (market/clear-market-epoch m0 reqs {:epoch 1})
+          st (market/settle-cleared-batches fab0 (:market cl) (:cleared cl)
+                                            {:epoch 1 :escrow-ttl-epochs 3 :subnet-fee-bps 100})
+          mkt (:market st)]
+      ;; Intra-company did NOT consume the 1 unit of commercial offer capacity or fail uncleared
+      (is (= 1 (count (:cleared cl))))
+      (is (= 0 (count (:uncleared cl))))
+      (is (= 1 (:total-intra-company-events mkt)))
+      (is (= 1 (:total-cross-company-cleared-orders mkt)))
+      (is (= 130 (get-in mkt [:per-capability-gmv-ech :saas-api-call]))))))
+
+(deftest v4-failover-insured-orders-tracking-test
+  (testing "V4 M3: Orders matched to a capability with >= 2 healthy redundant providers increment :total-failover-insured-orders; solo provider does not"
+    (let [fab0 (fabric/init-fabric {:seed 406})
+          b-pk (get-in fab0 [:light-nodes :builder-larg-1 :pubkey-hex])
+          p1-pk (get-in fab0 [:light-nodes :builder-larg-2 :pubkey-hex])
+          p2-pk (get-in fab0 [:light-nodes :builder-larg-3 :pubkey-hex])
+          req {:request-id "req-fo-1" :request-seq 1 :epoch 1
+               :buyer-id :builder-larg-1 :buyer-pubkey b-pk
+               :capability-type :web-search-extract :units 2
+               :max-wtp-ech 200 :min-sla-bps 8800 :budget-ech 400}
+          m-solo (-> (market/init-market-state {:seed 406})
+                     (market/register-offer {:offer-id "o-solo" :capability-type :web-search-extract
+                                             :unit-price-ech 110 :marginal-cost-ech 40
+                                             :capacity-units-per-epoch 5 :provider-id :builder-larg-2
+                                             :provider-pubkey p1-pk :subnet-id "root/markets/larg-tac"
+                                             :attested-sla-bps 9600 :true-delivery-prob 1.0}))
+          m-dual (market/register-offer m-solo {:offer-id "o-dual" :capability-type :web-search-extract
+                                                :unit-price-ech 115 :marginal-cost-ech 40
+                                                :capacity-units-per-epoch 5 :provider-id :builder-larg-3
+                                                :provider-pubkey p2-pk :subnet-id "root/markets/midi-sim"
+                                                :attested-sla-bps 9600 :true-delivery-prob 1.0})
+          cl-solo (market/clear-market-epoch m-solo [req] {:epoch 1})
+          st-solo (market/settle-cleared-batches fab0 (:market cl-solo) (:cleared cl-solo) {:epoch 1 :escrow-ttl-epochs 3})
+          cl-dual (market/clear-market-epoch m-dual [req] {:epoch 1})
+          st-dual (market/settle-cleared-batches fab0 (:market cl-dual) (:cleared cl-dual) {:epoch 1 :escrow-ttl-epochs 3})
+          ws-brk (get-in st-dual [:market :web-search-meter-breakdown])]
+      (is (= 0 (:total-failover-insured-orders (:market st-solo))))
+      (is (= 1 (:total-failover-insured-orders (:market st-dual))))
+      (is (= 220 (+ (:query-ech ws-brk) (:extract-ech ws-brk) (:freshness-egress-ech ws-brk)))))))

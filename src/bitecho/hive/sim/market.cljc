@@ -115,6 +115,14 @@
     :price-anchor-status :anchored
     :anchor-source "$/GB moved (ops/egress dominate)"}
 
+   :saas-api-call
+   {:billing-model :per-task-escrow
+    :cost-curve :compute-bound
+    :ref-price-ech 130
+    :marginal-cost-ech 30
+    :price-anchor-status :anchored
+    :anchor-source "SaaS-company agent selling metered SaaS API calls to other agents on Bitecho"}
+
    ;; Existing V1/V2 capabilities retained for 100% backward compatibility
    :artifact-storage
    {:billing-model :per-task-escrow
@@ -166,26 +174,27 @@
         capability-catalog))
 
 (def capability-types
-  "Ordered vector of all supported V3 capability types (top-5 synthesis ranking first)."
-  [:llm-inference :web-search-extract :sandbox-compute :eval-verify :formal-verify
+  "Ordered vector of all supported V4 capability types (top-5 synthesis + SaaS-agent ranking first)."
+  [:llm-inference :web-search-extract :sandbox-compute :saas-api-call :eval-verify :formal-verify
    :storage-bytes-at-rest :bandwidth-bytes-in-motion
    :tac-auction-agent :inverse-game-eval :tts-kokoro :stt-moonshine :artifact-storage])
 
 (def capability-demand-weights
-  "Demand share weights summing to 100 reflecting Axiom's V3 Top-5 synthesis ranking:
-   (1) :llm-inference (28), (2) :web-search-extract (20), (3) :sandbox-compute (16),
-   (4) :eval-verify (9) + :formal-verify (6) = 15,
-   (5) :storage-bytes-at-rest (6) + :bandwidth-bytes-in-motion (6) = 12,
-   plus legacy capabilities (9)."
-  {:llm-inference 28
-   :web-search-extract 20
-   :sandbox-compute 16
-   :eval-verify 9
-   :formal-verify 6
+  "Demand share weights summing to 100 reflecting Axiom's V3 Top-5 synthesis ranking + V4 SaaS-agent APIs:
+   (1) :llm-inference (25), (2) :web-search-extract (18), (3) :sandbox-compute (15),
+   (4) :saas-api-call (10), (5) :eval-verify (8) + :formal-verify (5) = 13,
+   (6) :storage-bytes-at-rest (6) + :bandwidth-bytes-in-motion (6) = 12,
+   plus legacy capabilities (7)."
+  {:llm-inference 25
+   :web-search-extract 18
+   :sandbox-compute 15
+   :saas-api-call 10
+   :eval-verify 8
+   :formal-verify 5
    :storage-bytes-at-rest 6
    :bandwidth-bytes-in-motion 6
-   :tac-auction-agent 4
-   :inverse-game-eval 2
+   :tac-auction-agent 3
+   :inverse-game-eval 1
    :tts-kokoro 1
    :stt-moonshine 1
    :artifact-storage 1})
@@ -261,6 +270,19 @@
     :or {query-ech 30 extract-ech 55 freshness-egress-ech 25}}]
   (+ (long query-ech) (long extract-ech) (long freshness-egress-ech)))
 
+(defn split-web-search-meters
+  "V4 M3: Partitions a `:web-search-extract` order's `gross-ech` into exact integer
+   `{:query-ech :extract-ech :freshness-egress-ech}` summing to `gross-ech` using
+   the catalog 30 / 55 / 25 three-meter retrieval ratio."
+  [gross-ech]
+  (let [g (max 0 (long (or gross-ech 0)))
+        q (quot (* g 30) 110)
+        e (quot (* g 55) 110)
+        f (- g q e)]
+    {:query-ech q
+     :extract-ech e
+     :freshness-egress-ech f}))
+
 (defn eval-verify-unit-price
   "Computes eval-verify price separating LLM-as-judge compute from platform fee."
   [{:keys [judge-cost-ech platform-fee-ech]
@@ -313,6 +335,14 @@
     :total-uncleared-orders 0
     :total-timeout-refunds 0
     :total-subnet-fees-ech 0
+    :total-failover-insured-orders 0
+    :web-search-meter-breakdown {:query-ech 0 :extract-ech 0 :freshness-egress-ech 0}
+    :reseller-gmv-ech 0
+    :reseller-upstream-cost-ech 0
+    :reseller-net-margin-ech 0
+    :per-vendor-reseller-gmv-ech {}
+    :total-intra-company-events 0
+    :total-cross-company-cleared-orders 0
     :per-subnet-gmv-ech {}
     :per-subnet-cleared-orders {}
     :per-subnet-released {}
@@ -328,15 +358,20 @@
 
 (defn register-offer
   "Registers a priced capability offer on `market`. Validates canonical 88-char SPKI pubkey.
-   Supports V3 `:venue-tier` (`:economy`, `:standard`, `:premium`) and `:replication-factor`.
+   Supports V3 `:venue-tier` (`:economy`, `:standard`, `:premium`), `:replication-factor`,
+   and V4 `:provider-role` (`:native`, `:reseller`, `:saas-agent`), `:upstream-vendor`,
+   `:reseller-margin-bps`, and `:upstream-cost-ech`.
    Note: `:attested-sla-bps` is initialized independently of any self-reported `:claimed-sla-bps`."
   [market {:keys [offer-id capability-type unit-price-ech marginal-cost-ech
                   capacity-units-per-epoch provider-id provider-pubkey subnet-id
                   attested-sla-bps claimed-sla-bps true-delivery-prob
                   sla-prior-alpha sla-prior-beta venue-tier replication-factor
+                  provider-role upstream-vendor reseller-margin-bps upstream-cost-ech
                   endogenous? status]}]
   (let [norm-pk (circle/normalize-spki-pubkey provider-pubkey)
         cat (get capability-catalog capability-type {:ref-price-ech 150 :marginal-cost-ech 50 :billing-model :per-task-escrow :cost-curve :compute-bound})
+        role (or provider-role :native)
+        r-margin-bps (when (= :reseller role) (max 0 (long (or reseller-margin-bps 500))))
         tier-key (if (contains? venue-tiers venue-tier) venue-tier :standard)
         tier-spec (get venue-tiers tier-key)
         base-mc (max 1 (long (or marginal-cost-ech (:marginal-cost-ech cat))))
@@ -345,8 +380,15 @@
              base-mc)
         tier-ref-price (max mc (long (Math/round (* (double (:ref-price-ech cat))
                                                     (double (:price-mult tier-spec))))))
+        reseller-derived-price (when (and (= :reseller role) (some? upstream-cost-ech))
+                                 (max mc (long (Math/round (* (double upstream-cost-ech)
+                                                              (+ 1.0 (/ (double r-margin-bps) 10000.0)))))))
         price (max mc (long (or unit-price-ech
+                                reseller-derived-price
                                 (if (some? venue-tier) tier-ref-price (:ref-price-ech cat)))))
+        derived-up-cost (when (= :reseller role)
+                          (long (or upstream-cost-ech
+                                    (quot (* price 10000) (+ 10000 (long r-margin-bps))))))
         cap (max 1 (long (or capacity-units-per-epoch 10)))
         a0 (max 1 (long (or sla-prior-alpha default-sla-prior-alpha)))
         b0 (max 1 (long (or sla-prior-beta default-sla-prior-beta)))
@@ -362,6 +404,10 @@
                  :capability-type capability-type
                  :billing-model (or (:billing-model cat) :per-task-escrow)
                  :cost-curve (or (:cost-curve cat) :compute-bound)
+                 :provider-role role
+                 :upstream-vendor upstream-vendor
+                 :reseller-margin-bps r-margin-bps
+                 :upstream-cost-ech derived-up-cost
                  :venue-tier tier-key
                  :replication-factor (or replication-factor (:default-replication-factor cat))
                  :unit-price-ech price
@@ -383,6 +429,99 @@
                  :low-util-streak 0
                  :endogenous? (boolean endogenous?)
                  :status (or status :active)}))))
+
+(def default-reseller-specs
+  "V4 deterministic Bitecho reseller agents reselling upstream cloud/AI APIs."
+  [{:reseller-id :reseller-openrouter
+    :upstream-vendor :openrouter
+    :reseller-margin-bps 500
+    :subnet-id "root/markets/midi-sim"
+    :offers [{:offer-id "offer-reseller-openrouter-llm"
+              :capability-type :llm-inference
+              :unit-price-ech 195
+              :marginal-cost-ech 80
+              :capacity-base 5}]}
+   {:reseller-id :reseller-gcp-compute
+    :upstream-vendor :gcp
+    :reseller-margin-bps 600
+    :subnet-id "root/markets/larg-tac"
+    :offers [{:offer-id "offer-reseller-gcp-sandbox"
+              :capability-type :sandbox-compute
+              :unit-price-ech 138
+              :marginal-cost-ech 50
+              :capacity-base 5}
+             {:offer-id "offer-reseller-gcp-storage"
+              :capability-type :storage-bytes-at-rest
+              :replication-factor 3
+              :unit-price-ech 44
+              :marginal-cost-ech 15
+              :capacity-base 6}]}
+   {:reseller-id :reseller-aws-egress
+    :upstream-vendor :aws
+    :reseller-margin-bps 600
+    :subnet-id "root/markets/clear-games"
+    :offers [{:offer-id "offer-reseller-aws-bandwidth"
+              :capability-type :bandwidth-bytes-in-motion
+              :unit-price-ech 92
+              :marginal-cost-ech 35
+              :capacity-base 6}]}])
+
+(defn spawn-deterministic-resellers
+  "Spawns deterministic Ed25519 Light Nodes for the 3 V4 reseller agents
+   (`reseller-openrouter`, `reseller-gcp-compute`, `reseller-aws-egress`) and registers
+   their `:provider-role :reseller` offers on `market`, strictly conserving 42B ECHO."
+  [fabric market {:keys [unit-mult epoch] :or {unit-mult 1 epoch 0}}]
+  (let [u-mult (max 1 (long unit-mult))
+        ep (long epoch)]
+    (reduce
+     (fn [{:keys [fabric market]} {:keys [reseller-id upstream-vendor reseller-margin-bps subnet-id offers]}]
+       (let [[fab1 node]
+             (if-let [existing (get-in fabric [:light-nodes reseller-id])]
+               [fabric existing]
+               (let [kp-info (fabric/derive-keypair (:master-rng fabric)
+                                                    (str "market/reseller/" (name reseller-id) "/keygen"))
+                     ls (light-node/init-light-state {:pubkey-hex (:pubkey-hex kp-info)
+                                                      :fingerprint (:pubkey-cid kp-info)}
+                                                     {:epoch ep :autonomous? true})
+                     n {:node-id reseller-id
+                        :tier :light
+                        :pubkey-hex (:pubkey-hex kp-info)
+                        :pubkey-cid (:pubkey-cid kp-info)
+                        :sovereign-uri (str (:network-uri fabric) "/id/" (:pubkey-cid kp-info))
+                        :keypair (:keypair kp-info)
+                        :light-state ls
+                        :subscribed-subnets #{subnet-id}
+                        :provider-role :reseller
+                        :upstream-vendor upstream-vendor
+                        :archetype {:archetype-id reseller-id
+                                    :role (str "Deterministic Reseller (" (name upstream-vendor) ")")
+                                    :affiliation "Bitecho Cloud/AI Reseller"
+                                    :external-archetype? true
+                                    :opt-in? false :endorsed? false :synthetic-archetype? true}}]
+                 [(-> fabric
+                      (assoc-in [:light-nodes reseller-id] n)
+                      (cond-> (not (contains? (get-in fabric [:state :ledger]) (:pubkey-hex kp-info)))
+                        (assoc-in [:state :ledger (:pubkey-hex kp-info)]
+                                  (account/map->AccountState {:balance 0 :seq 0 :deps []}))))
+                  n]))
+             mkt1 (reduce (fn [m ospec]
+                            (register-offer m
+                                            (merge {:provider-role :reseller
+                                                    :upstream-vendor upstream-vendor
+                                                    :reseller-margin-bps reseller-margin-bps
+                                                    :provider-id reseller-id
+                                                    :provider-pubkey (:pubkey-hex node)
+                                                    :subnet-id subnet-id
+                                                    :venue-tier :standard
+                                                    :attested-sla-bps 9600
+                                                    :true-delivery-prob 0.99
+                                                    :capacity-units-per-epoch (* u-mult (long (:capacity-base ospec 5)))}
+                                                   (dissoc ospec :capacity-base))))
+                          market
+                          offers)]
+         {:fabric fab1 :market mkt1}))
+     {:fabric fabric :market market}
+     default-reseller-specs)))
 
 (defn inject-sybil-provider
   "Adversarial helper: registers a dishonest/Sybil provider claiming high SLA (default 9999 bps)
@@ -546,74 +685,78 @@
                                                     0
                                                     (long (:capacity-units-per-epoch o)))])
                                (:offers market)))
-        {:keys [rem cleared uncleared diags effects]}
+        {:keys [rem cleared uncleared intra-count diags effects]}
         (reduce
          (fn [acc req]
-           (let [ctype (:capability-type req)
-                 units (max 1 (long (or (:units req) 1)))
-                 max-wtp (long (or (:max-wtp-ech req) 0))
-                 min-sla (long (or (:min-sla-bps req) 0))
-                 budget (long (or (:budget-ech req) (* max-wtp units)))
-                 ref-p (get-in capability-catalog [ctype :ref-price-ech] 150)
-                 ;; All active non-exited offers for this capability on non-halted subnets (forbidding self-trades)
-                 active-offers (filter (fn [o]
-                                         (and (= ctype (:capability-type o))
-                                              (not= :exited (:status o))
-                                              (not= (:buyer-pubkey req) (:provider-pubkey o))
-                                              (not (contains? halted (:subnet-id o)))))
-                                       (vals (:offers market)))
-                 ;; Healthy redundant peers for failover/workflow-insurance bonus
-                 healthy-peers (filter #(>= (long (:attested-sla-bps %)) 8800) active-offers)
-                 healthy-prov-count (count (distinct (map :provider-pubkey healthy-peers)))
-                 healthy-subnets (set (map :subnet-id healthy-peers))
-                 ;; Offers matching price & SLA terms
-                 term-offers (filter (fn [o]
-                                       (and (<= (long (:unit-price-ech o)) max-wtp)
-                                            (>= (long (:attested-sla-bps o)) min-sla)))
-                                     active-offers)
-                 ;; Offers affordable within buyer's budget
-                 budget-offers (filter (fn [o]
-                                         (<= (* (long (:unit-price-ech o)) units) budget))
-                                       term-offers)
-                 ;; Offers with remaining capacity
-                 avail-offers (filter (fn [o]
-                                        (>= (long (get (:rem acc) (:offer-id o) 0)) units))
-                                      budget-offers)]
-             (if-let [best (first (sort-by (fn [o]
-                                             (let [cross-subs (count (disj healthy-subnets (:subnet-id o)))
-                                                   o-u-opts (assoc u-opts
-                                                                   :redundant-provider-count healthy-prov-count
-                                                                   :cross-subnet-peers cross-subs)]
-                                               [(- (double (clearing-utility o ref-p o-u-opts)))
-                                                (:offer-id o)]))
-                                           avail-offers))]
-               (let [oid (:offer-id best)
-                     gross (* (long (:unit-price-ech best)) units)]
-                 (-> acc
-                     (update-in [:rem oid] - units)
-                     (update :cleared conj {:request-id (:request-id req)
-                                            :buyer-id (:buyer-id req)
-                                            :buyer-pubkey (:buyer-pubkey req)
-                                            :offer-id oid
-                                            :provider-id (:provider-id best)
-                                            :provider-pubkey (:provider-pubkey best)
-                                            :subnet-id (:subnet-id best)
-                                            :capability-type ctype
-                                            :units units
-                                            :unit-price-ech (long (:unit-price-ech best))
-                                            :gross-ech gross})))
-               (let [reason (cond
-                              (empty? term-offers) :order-uncleared-no-supply
-                              (empty? budget-offers) :order-uncleared-insufficient-budget
-                              :else :order-uncleared-capacity-exhausted)]
-                 (-> acc
-                     (update :uncleared conj (assoc req :reason reason))
-                     (update-in [:diags reason] (fnil inc 0))
-                     (update :effects conj {:effect :diagnose
-                                            :reason reason
-                                            :request-id (:request-id req)
-                                            :capability-type ctype}))))))
-         {:rem init-rem :cleared [] :uncleared [] :diags {} :effects []}
+           (if (= :intra-company (:traffic-scope req))
+             (update acc :intra-count inc)
+             (let [ctype (:capability-type req)
+                   units (max 1 (long (or (:units req) 1)))
+                   max-wtp (long (or (:max-wtp-ech req) 0))
+                   min-sla (long (or (:min-sla-bps req) 0))
+                   budget (long (or (:budget-ech req) (* max-wtp units)))
+                   ref-p (get-in capability-catalog [ctype :ref-price-ech] 150)
+                   ;; All active non-exited offers for this capability on non-halted subnets (forbidding self-trades)
+                   active-offers (filter (fn [o]
+                                           (and (= ctype (:capability-type o))
+                                                (not= :exited (:status o))
+                                                (not= (:buyer-pubkey req) (:provider-pubkey o))
+                                                (not (contains? halted (:subnet-id o)))))
+                                         (vals (:offers market)))
+                   ;; Healthy redundant peers for failover/workflow-insurance bonus
+                   healthy-peers (filter #(>= (long (:attested-sla-bps %)) 8800) active-offers)
+                   healthy-prov-count (count (distinct (map :provider-pubkey healthy-peers)))
+                   healthy-subnets (set (map :subnet-id healthy-peers))
+                   ;; Offers matching price & SLA terms
+                   term-offers (filter (fn [o]
+                                         (and (<= (long (:unit-price-ech o)) max-wtp)
+                                              (>= (long (:attested-sla-bps o)) min-sla)))
+                                       active-offers)
+                   ;; Offers affordable within buyer's budget
+                   budget-offers (filter (fn [o]
+                                           (<= (* (long (:unit-price-ech o)) units) budget))
+                                         term-offers)
+                   ;; Offers with remaining capacity
+                   avail-offers (filter (fn [o]
+                                          (>= (long (get (:rem acc) (:offer-id o) 0)) units))
+                                        budget-offers)]
+               (if-let [best (first (sort-by (fn [o]
+                                               (let [cross-subs (count (disj healthy-subnets (:subnet-id o)))
+                                                     o-u-opts (assoc u-opts
+                                                                     :redundant-provider-count healthy-prov-count
+                                                                     :cross-subnet-peers cross-subs)]
+                                                 [(- (double (clearing-utility o ref-p o-u-opts)))
+                                                  (:offer-id o)]))
+                                             avail-offers))]
+                 (let [oid (:offer-id best)
+                       gross (* (long (:unit-price-ech best)) units)]
+                   (-> acc
+                       (update-in [:rem oid] - units)
+                       (update :cleared conj {:request-id (:request-id req)
+                                              :buyer-id (:buyer-id req)
+                                              :buyer-pubkey (:buyer-pubkey req)
+                                              :offer-id oid
+                                              :provider-id (:provider-id best)
+                                              :provider-pubkey (:provider-pubkey best)
+                                              :subnet-id (:subnet-id best)
+                                              :capability-type ctype
+                                              :traffic-scope (or (:traffic-scope req) :cross-company)
+                                              :failover-insured? (>= healthy-prov-count 2)
+                                              :units units
+                                              :unit-price-ech (long (:unit-price-ech best))
+                                              :gross-ech gross})))
+                 (let [reason (cond
+                                (empty? term-offers) :order-uncleared-no-supply
+                                (empty? budget-offers) :order-uncleared-insufficient-budget
+                                :else :order-uncleared-capacity-exhausted)]
+                   (-> acc
+                       (update :uncleared conj (assoc req :reason reason))
+                       (update-in [:diags reason] (fnil inc 0))
+                       (update :effects conj {:effect :diagnose
+                                              :reason reason
+                                              :request-id (:request-id req)
+                                              :capability-type ctype})))))))
+         {:rem init-rem :cleared [] :uncleared [] :intra-count 0 :diags {} :effects []}
          ordered-reqs)
         ;; Adapt offer prices based on realized utilization
         updated-offers (into {}
@@ -628,10 +771,12 @@
         mkt' (-> market
                  (assoc :offers updated-offers)
                  (update :total-uncleared-orders (fnil + 0) (count uncleared))
+                 (update :total-intra-company-events (fnil + 0) intra-count)
                  (update :diagnostics (fn [d] (merge-with + (or d {}) diags))))]
     {:market mkt'
      :cleared cleared
      :uncleared uncleared
+     :intra-company-events intra-count
      :diagnostics diags
      :effects effects}))
 
@@ -1185,10 +1330,32 @@
                            {:ok? true :fabric fab-cur :amount 0 :effects []})
                  sub-fee-paid (long (:amount fee-res))
                  mkt-orders (reduce (fn [m ord]
-                                      (let [og (long (:gross-ech ord))]
-                                        (-> m
-                                            (update-in [:per-provider-gmv-ech (:offer-id ord)] (fnil + 0) og)
-                                            (update-in [:per-capability-gmv-ech (:capability-type ord)] (fnil + 0) og))))
+                                      (let [og (long (:gross-ech ord))
+                                            ctype (:capability-type ord)
+                                            offer (get-in m [:offers (:offer-id ord)])
+                                            reseller? (= :reseller (:provider-role offer))
+                                            m1 (-> m
+                                                   (update-in [:per-provider-gmv-ech (:offer-id ord)] (fnil + 0) og)
+                                                   (update-in [:per-capability-gmv-ech ctype] (fnil + 0) og)
+                                                   (cond-> (:failover-insured? ord)
+                                                     (update :total-failover-insured-orders (fnil inc 0)))
+                                                   (cond-> (= :web-search-extract ctype)
+                                                     (update :web-search-meter-breakdown
+                                                             #(merge-with + (or % {:query-ech 0 :extract-ech 0 :freshness-egress-ech 0})
+                                                                          (split-web-search-meters og)))))]
+                                        (if reseller?
+                                          (let [m-bps (max 0 (long (or (:reseller-margin-bps offer) 500)))
+                                                up-cost (quot (* og 10000) (+ 10000 m-bps))
+                                                o-burn (if (pos? og) (max 1 (quot (* og 50) 10000)) 0)
+                                                o-sfee (if (pos? sub-fee-paid) (quot (* og subnet-fee-bps) 10000) 0)
+                                                net-m (max 0 (- og up-cost o-burn o-sfee))
+                                                vendor (or (:upstream-vendor offer) :unknown)]
+                                            (-> m1
+                                                (update :reseller-gmv-ech (fnil + 0) og)
+                                                (update :reseller-upstream-cost-ech (fnil + 0) up-cost)
+                                                (update :reseller-net-margin-ech (fnil + 0) net-m)
+                                                (update-in [:per-vendor-reseller-gmv-ech vendor] (fnil + 0) og)))
+                                          m1)))
                                     (:market acc)
                                     orders)
                  mkt' (reduce (fn [m oid]
@@ -1198,6 +1365,7 @@
                               (-> mkt-orders
                                   (update :total-cleared-gmv-ech (fnil + 0) gross)
                                   (update :total-cleared-orders (fnil + 0) (count orders))
+                                  (update :total-cross-company-cleared-orders (fnil + 0) (count orders))
                                   (update :total-subnet-fees-ech (fnil + 0) sub-fee-paid)
                                   (update-in [:per-subnet-gmv-ech subnet-id] (fnil + 0) gross)
                                   (update-in [:per-subnet-cleared-orders subnet-id] (fnil + 0) (count orders))
