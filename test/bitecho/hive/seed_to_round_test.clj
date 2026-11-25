@@ -5,6 +5,7 @@
    and pinned Genesis/Circle spec CID `8039db926a1d9ee5ab7b5a9c198512de20dd79def8e7687ed8e3c1b0e28d14d6`."
   (:require [bitecho.hive.genesis :as genesis]
             [bitecho.hive.seed-to-round :as s2r]
+            [bitecho.hive.sim.lifecycle :as lifecycle]
             [clojure.test :refer [deftest is testing]]
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
@@ -102,3 +103,83 @@
       (is (map? (:anchor-cliff-interrogation s1)))
       (is (map? (:deflationary-crossover-interrogation s1)))
       (is (= 64 (count (:sweep-root-cid s1)))))))
+
+;; =============================================================================
+;; V3 Endogenous Seed-to-A Piping Tests (Strict TDD)
+;; =============================================================================
+
+(defspec ^{:doc "V3 Endogenous seed_to_round preserves exact 42B ECHO 7-bucket conservation every month, Cycle Deflation Theorem (M_t <= k * R_trailing), Year-3 sunset burn to 0, and CRN determinism across agent-scale multipliers."}
+  prop-endogenous-seed-to-round-42b-conservation-and-determinism 20
+  (prop/for-all [scale (gen/elements [1.0 22.0 60.0 108.0 500.0])
+                 k-bps (gen/elements [2500 5000])
+                 tau-bps (gen/elements [25 50 100])]
+                (let [trial {:scenario :baseline-g4-angel-heavy
+                             :seed 20261124
+                             :time-compression-factor 72
+                             :epochs 450
+                             :cleared-gmv-ech 7200000
+                             :market-burned-ech 36000
+                             :per-capability-gmv-ech {:llm-inference 3000000
+                                                      :web-search-extract 1800000
+                                                      :sandbox-compute 1200000
+                                                      :eval-verify 600000
+                                                      :storage-bytes-at-rest 300000
+                                                      :bandwidth-bytes-in-motion 300000}
+                             :per-subnet-gmv-ech {"root/markets/larg-tac" 2500000
+                                                  "root/markets/midi-sim" 2000000
+                                                  "root/markets/clear-games" 1500000
+                                                  "root/markets/trustx-verify" 1200000}
+                             :partner-vesting {:partner-larg-tac {:vested-ech 360000000 :vested-claims 32 :paused-claims 0}
+                                               :partner-midi-sim {:vested-ech 360000000 :vested-claims 32 :paused-claims 0}}
+                             :g4-angels {:onboarded? true :seed-closed? true :anchor-threshold 2}
+                             :protocol-infra {:upgrades-executed 15 :upgrade-stalls 0 :rotations-verified 7}
+                             :endogenous-providers-entered 2
+                             :endogenous-providers-exited 0}
+                      r1 (s2r/run-endogenous-seed-to-round
+                          {:trial-telemetry trial
+                           :agent-scale-multiplier scale
+                           :k-bps k-bps
+                           :tau-bps tau-bps})
+                      r2 (s2r/run-endogenous-seed-to-round
+                          {:trial-telemetry trial
+                           :agent-scale-multiplier scale
+                           :k-bps k-bps
+                           :tau-bps tau-bps})
+                      m36 (last (:monthly-trace r1))
+                      k-frac (/ (double k-bps) 10000.0)]
+                  (and (= r1 r2)
+                       (true? (:all-months-conserved? r1))
+                       (= 36 (count (:monthly-trace r1)))
+                       (zero? (long (:bootstrap-locked m36)))
+                       (= s2r/SUNSET-EPOCH (:epoch m36))
+                       (every? (fn [m]
+                                 (and (= s2r/HARD-CAP-ECHO (s2r/sum-supply-buckets m))
+                                      (<= (long (:minted-this-month m))
+                                          (long (Math/floor (* k-frac (double (:trailing-burned-revenue m))))))))
+                               (:monthly-trace r1))))))
+
+(deftest unit-endogenous-seed-to-round-lifecycle-piping-and-agent-scale-sweep
+  (testing "Piping real lifecycle/run-full-network-trial telemetry into run-endogenous-seed-to-round across 550 / 1,500 / 2,700 active autonomous agents conserves 42B every month and scales GMV monotonically"
+    (let [trial (lifecycle/run-full-network-trial
+                 {:scenario :high-velocity-commercial
+                  :seed 20261124
+                  :time-compression-factor 144
+                  :epochs 230})
+          sweep (s2r/run-endogenous-scale-sweep
+                 {:trial-telemetry trial
+                  :target-agent-counts [550 1500 2700]})
+          by-agents (into {} (map (juxt :target-active-agents identity) (:results sweep)))]
+      (is (= 3 (count (:results sweep))))
+      (is (true? (:all-conserved? sweep)))
+      (doseq [n [550 1500 2700]]
+        (let [r (get by-agents n)]
+          (is (true? (:all-months-conserved? r)))
+          (is (= n (:target-active-agents r)))
+          (is (pos? (:mean-monthly-gmv-ech r)))
+          (is (pos? (:cumulative-burned-revenue r)))
+          (is (map? (:cumulative-per-capability-burn-ech r)))))
+      ;; Monotonic GMV and burn scaling with fleet size
+      (is (< (:mean-monthly-gmv-ech (get by-agents 550))
+             (:mean-monthly-gmv-ech (get by-agents 1500))))
+      (is (< (:mean-monthly-gmv-ech (get by-agents 1500))
+             (:mean-monthly-gmv-ech (get by-agents 2700)))))))

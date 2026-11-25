@@ -24,6 +24,7 @@
             [bitecho.core.circle :as circle]
             [bitecho.core.subnet :as subnet]
             [bitecho.crypto :as crypto]
+            [bitecho.economy.account :as account]
             [bitecho.economy.puzzle :as puzzle]
             [bitecho.fressian :as fressian]
             [bitecho.hive.rolling-upgrade-sim :as rolling-upgrade]
@@ -155,7 +156,12 @@
                       :archetype {:archetype-id p-id :role "Organic Commercial Subnet Provider"
                                   :affiliation "Organic Entrant" :external-archetype? true
                                   :opt-in? false :endorsed? false :synthetic-archetype? true}}]
-            [(assoc-in fabric [:light-nodes p-id] node) node]))
+            [(-> fabric
+                 (assoc-in [:light-nodes p-id] node)
+                 (cond-> (not (contains? (get-in fabric [:state :ledger]) (:pubkey-hex kp-info)))
+                   (assoc-in [:state :ledger (:pubkey-hex kp-info)]
+                             (account/map->AccountState {:balance 0 :seq 0 :deps []}))))
+             node]))
         ;; Build & verify entity descriptor with its own dedicated :vault-id (never sharing ecosystem-faucet)
         fab2 (if (contains? (get-in fab1 [:state :entity-descriptors]) subnet-id)
                fab1
@@ -382,32 +388,84 @@
                                       :subnet-fee-bps (or (:subnet-fee-bps opts) 100)
                                       :subnet-treasuries sub-treasuries})
         base-offers
-        [{:offer-id "offer-larg-tac-agent" :capability-type :tac-auction-agent :unit-price-ech 150 :marginal-cost-ech 60
-          :capacity-units-per-epoch (* u-mult 7) :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
-         {:offer-id "offer-larg-llm" :capability-type :llm-inference :unit-price-ech 190 :marginal-cost-ech 80
-          :capacity-units-per-epoch (* u-mult 7) :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
-         {:offer-id "offer-larg-storage" :capability-type :artifact-storage :unit-price-ech 60 :marginal-cost-ech 20
-          :capacity-units-per-epoch (* u-mult 8) :provider-id :partner-larg-tac :subnet-id "root/markets/larg-tac"}
-         ;; Sibling commercial subnets offering redundant capabilities for INV-5 diversion
-         {:offer-id "offer-midi-llm" :capability-type :llm-inference :unit-price-ech 200 :marginal-cost-ech 80
-          :capacity-units-per-epoch (* u-mult 8) :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
-         {:offer-id "offer-midi-tac" :capability-type :tac-auction-agent :unit-price-ech 160 :marginal-cost-ech 60
-          :capacity-units-per-epoch (* u-mult 8) :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
-         {:offer-id "offer-midi-tts" :capability-type :tts-kokoro :unit-price-ech 80 :marginal-cost-ech 30
-          :capacity-units-per-epoch (* u-mult 6) :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
-         {:offer-id "offer-midi-stt" :capability-type :stt-moonshine :unit-price-ech 90 :marginal-cost-ech 35
-          :capacity-units-per-epoch (* u-mult 6) :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
-         {:offer-id "offer-clear-game" :capability-type :inverse-game-eval :unit-price-ech 320 :marginal-cost-ech 120
-          :capacity-units-per-epoch (* u-mult 6) :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
-         {:offer-id "offer-clear-tac" :capability-type :tac-auction-agent :unit-price-ech 165 :marginal-cost-ech 60
-          :capacity-units-per-epoch (* u-mult 7) :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
-         {:offer-id "offer-trustx-verify" :capability-type :formal-verify :unit-price-ech 400 :marginal-cost-ech 160
-          :capacity-units-per-epoch (* u-mult 6) :provider-id :partner-trustx-verify :subnet-id "root/markets/trustx-verify"}
-         {:offer-id "offer-trustx-storage" :capability-type :artifact-storage :unit-price-ech 65 :marginal-cost-ech 20
-          :capacity-units-per-epoch (* u-mult 8) :provider-id :builder-larg-1 :subnet-id "root/markets/trustx-verify"}]
+        [;; root/markets/larg-tac
+         {:offer-id "offer-larg-tac-agent" :capability-type :tac-auction-agent :venue-tier :standard
+          :unit-price-ech 150 :marginal-cost-ech 60 :capacity-units-per-epoch (* u-mult 7)
+          :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
+         {:offer-id "offer-larg-llm" :capability-type :llm-inference :venue-tier :standard
+          :unit-price-ech 190 :marginal-cost-ech 80 :capacity-units-per-epoch (* u-mult 7)
+          :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
+         {:offer-id "offer-larg-search" :capability-type :web-search-extract :venue-tier :standard
+          :unit-price-ech 110 :marginal-cost-ech 40 :capacity-units-per-epoch (* u-mult 7)
+          :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
+         {:offer-id "offer-larg-sandbox" :capability-type :sandbox-compute :venue-tier :standard
+          :unit-price-ech 140 :marginal-cost-ech 50 :capacity-units-per-epoch (* u-mult 6)
+          :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
+         {:offer-id "offer-larg-storage-rest" :capability-type :storage-bytes-at-rest :venue-tier :standard
+          :replication-factor 3 :unit-price-ech 45 :marginal-cost-ech 15 :capacity-units-per-epoch (* u-mult 8)
+          :provider-id :partner-larg-tac :subnet-id "root/markets/larg-tac"}
+         {:offer-id "offer-larg-storage" :capability-type :artifact-storage :venue-tier :standard
+          :unit-price-ech 60 :marginal-cost-ech 20 :capacity-units-per-epoch (* u-mult 8)
+          :provider-id :partner-larg-tac :subnet-id "root/markets/larg-tac"}
+         ;; root/markets/midi-sim (redundant sibling commercial subnet for INV-5 diversion + economy/standard tiers)
+         {:offer-id "offer-midi-llm" :capability-type :llm-inference :venue-tier :standard
+          :unit-price-ech 200 :marginal-cost-ech 80 :capacity-units-per-epoch (* u-mult 8)
+          :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
+         {:offer-id "offer-midi-llm-econ" :capability-type :llm-inference :venue-tier :economy
+          :unit-price-ech 85 :marginal-cost-ech 40 :capacity-units-per-epoch (* u-mult 6)
+          :attested-sla-bps 9100 :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
+         {:offer-id "offer-midi-search" :capability-type :web-search-extract :venue-tier :standard
+          :unit-price-ech 115 :marginal-cost-ech 40 :capacity-units-per-epoch (* u-mult 7)
+          :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
+         {:offer-id "offer-midi-sandbox" :capability-type :sandbox-compute :venue-tier :standard
+          :unit-price-ech 145 :marginal-cost-ech 50 :capacity-units-per-epoch (* u-mult 6)
+          :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
+         {:offer-id "offer-midi-bandwidth" :capability-type :bandwidth-bytes-in-motion :venue-tier :standard
+          :unit-price-ech 95 :marginal-cost-ech 35 :capacity-units-per-epoch (* u-mult 8)
+          :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
+         {:offer-id "offer-midi-tac" :capability-type :tac-auction-agent :venue-tier :standard
+          :unit-price-ech 160 :marginal-cost-ech 60 :capacity-units-per-epoch (* u-mult 8)
+          :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
+         {:offer-id "offer-midi-tts" :capability-type :tts-kokoro :venue-tier :standard
+          :unit-price-ech 80 :marginal-cost-ech 30 :capacity-units-per-epoch (* u-mult 6)
+          :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
+         {:offer-id "offer-midi-stt" :capability-type :stt-moonshine :venue-tier :standard
+          :unit-price-ech 90 :marginal-cost-ech 35 :capacity-units-per-epoch (* u-mult 6)
+          :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
+         ;; root/markets/clear-games (eval-verify, premium sandbox, bandwidth, game-eval, tac)
+         {:offer-id "offer-clear-eval" :capability-type :eval-verify :venue-tier :standard
+          :unit-price-ech 160 :marginal-cost-ech 60 :capacity-units-per-epoch (* u-mult 7)
+          :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
+         {:offer-id "offer-clear-sandbox-prem" :capability-type :sandbox-compute :venue-tier :premium
+          :unit-price-ech 420 :marginal-cost-ech 50 :capacity-units-per-epoch (* u-mult 5)
+          :attested-sla-bps 9950 :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
+         {:offer-id "offer-clear-bandwidth" :capability-type :bandwidth-bytes-in-motion :venue-tier :standard
+          :unit-price-ech 100 :marginal-cost-ech 35 :capacity-units-per-epoch (* u-mult 7)
+          :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
+         {:offer-id "offer-clear-game" :capability-type :inverse-game-eval :venue-tier :standard
+          :unit-price-ech 320 :marginal-cost-ech 120 :capacity-units-per-epoch (* u-mult 6)
+          :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
+         {:offer-id "offer-clear-tac" :capability-type :tac-auction-agent :venue-tier :standard
+          :unit-price-ech 165 :marginal-cost-ech 60 :capacity-units-per-epoch (* u-mult 7)
+          :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
+         ;; root/markets/trustx-verify (formal-verify, eval-verify, durable storage r=6, artifact-storage)
+         {:offer-id "offer-trustx-verify" :capability-type :formal-verify :venue-tier :standard
+          :unit-price-ech 400 :marginal-cost-ech 160 :capacity-units-per-epoch (* u-mult 6)
+          :provider-id :partner-trustx-verify :subnet-id "root/markets/trustx-verify"}
+         {:offer-id "offer-trustx-eval" :capability-type :eval-verify :venue-tier :standard
+          :unit-price-ech 165 :marginal-cost-ech 60 :capacity-units-per-epoch (* u-mult 6)
+          :provider-id :partner-trustx-verify :subnet-id "root/markets/trustx-verify"}
+         {:offer-id "offer-trustx-storage-rest" :capability-type :storage-bytes-at-rest :venue-tier :standard
+          :replication-factor 6 :unit-price-ech 90 :marginal-cost-ech 30 :capacity-units-per-epoch (* u-mult 8)
+          :provider-id :builder-larg-1 :subnet-id "root/markets/trustx-verify"}
+         {:offer-id "offer-trustx-storage" :capability-type :artifact-storage :venue-tier :standard
+          :unit-price-ech 65 :marginal-cost-ech 20 :capacity-units-per-epoch (* u-mult 8)
+          :provider-id :builder-larg-1 :subnet-id "root/markets/trustx-verify"}]
         m1 (reduce (fn [m o]
                      (let [pk (get-in fab [:light-nodes (:provider-id o) :pubkey-hex])]
-                       (market/register-offer m (assoc o :provider-pubkey pk :attested-sla-bps 9500 :true-delivery-prob 0.99))))
+                       (market/register-offer m (merge {:attested-sla-bps 9500 :true-delivery-prob 0.99}
+                                                       o
+                                                       {:provider-pubkey pk}))))
                    m0
                    base-offers)
         ;; Inject Sybil provider in :sybil-provider-attack scenario
@@ -541,26 +599,27 @@
     (assoc fab :bus (:bus del-res))))
 
 (defn- generate-epoch-demand
-  "Generates deterministic capability market requests for epoch `ep` using isolated
-   per-epoch demand PRNG streams, scaled cleanly with time-compression factor `C`."
+  "Generates deterministic V3 capability market requests for epoch `ep` using isolated
+   per-epoch demand PRNG streams, weighted by Axiom's Top-5 synthesis ranking, plus
+   recurring `:storage-bytes-at-rest` epoch rent orders scaled with time-compression factor `C`."
   [fab scenario ep scaled-cfg]
   (let [sunset-ep (long (:bootstrap-sunset-epoch scaled-cfg))
         post-sunset? (>= ep sunset-ep)
         u-mult (demand-unit-multiplier scaled-cfg)
         base-orders (case scenario
-                      :high-velocity-commercial 18
-                      :bear-post-sunset-cliff (if post-sunset? 3 7)
-                      :sybil-provider-attack 8
-                      7)
+                      :high-velocity-commercial 24
+                      :bear-post-sunset-cliff (if post-sunset? 3 8)
+                      :sybil-provider-attack 10
+                      9)
         buyers [:builder-larg-1 :builder-larg-2 :builder-larg-3 :angel-g4-1 :founder-simon]
         rng (crypto/fork-random (:master-rng fab) (str "demand/global/ep/" ep))
         reqs (mapv (fn [idx]
-                     (let [ctype (nth market/capability-types (crypto/next-int rng (count market/capability-types)))
+                     (let [ctype (market/sample-capability-by-demand-weight rng)
                            buyer-id (nth buyers (crypto/next-int rng (count buyers)))
                            buyer-pk (get-in fab [:light-nodes buyer-id :pubkey-hex])
                            ref-p (get-in market/capability-catalog [ctype :ref-price-ech] 150)
                            units (* u-mult (inc (crypto/next-int rng 3)))
-                           wtp (+ ref-p (quot (* ref-p (+ 20 (crypto/next-int rng 60))) 100))]
+                           wtp (+ ref-p (quot (* ref-p (+ 25 (crypto/next-int rng 75))) 100))]
                        {:request-id (str "req-ep" ep "-" idx)
                         :request-seq idx
                         :epoch ep
@@ -571,19 +630,35 @@
                         :max-wtp-ech wtp
                         :min-sla-bps 8800
                         :budget-ech (* wtp units)}))
-                   (range 1 (inc base-orders)))]
+                   (range 1 (inc base-orders)))
+        ;; Recurring epoch rent order for :storage-bytes-at-rest (durability/replication r in {1,3,6})
+        rent-buyer :founder-simon
+        rent-buyer-pk (get-in fab [:light-nodes rent-buyer :pubkey-hex])
+        rent-req {:request-id (str "req-rent-ep" ep)
+                  :request-seq (inc base-orders)
+                  :epoch ep
+                  :buyer-id rent-buyer
+                  :buyer-pubkey rent-buyer-pk
+                  :capability-type :storage-bytes-at-rest
+                  :billing-model :recurring-epoch-rent
+                  :units (* u-mult 2)
+                  :max-wtp-ech 150
+                  :min-sla-bps 8800
+                  :budget-ech (* 150 u-mult 2)}
+        reqs-with-rent (conj reqs rent-req)]
     (if (= :sybil-provider-attack scenario)
-      (conj reqs (market/make-strategic-buyer-request
-                  {:request-id (str "req-whale-ep" ep)
-                   :request-seq (inc base-orders)
-                   :epoch ep
-                   :buyer-id :angel-g4-1
-                   :buyer-pubkey (get-in fab [:light-nodes :angel-g4-1 :pubkey-hex])
-                   :capability-type :formal-verify
-                   :units (* u-mult 2)
-                   :min-sla-bps 8800
-                   :budget-ech 1000000000}))
-      reqs)))
+      (conj reqs-with-rent
+            (market/make-strategic-buyer-request
+             {:request-id (str "req-whale-ep" ep)
+              :request-seq (+ 2 base-orders)
+              :epoch ep
+              :buyer-id :angel-g4-1
+              :buyer-pubkey (get-in fab [:light-nodes :angel-g4-1 :pubkey-hex])
+              :capability-type :formal-verify
+              :units (* u-mult 2)
+              :min-sla-bps 8800
+              :budget-ech 1000000000}))
+      reqs-with-rent)))
 
 (defn- compute-subnet-sla-bps
   [market subnet-id halted-subnets infra-stats]
@@ -773,13 +848,27 @@
         init-partner-stats (into {} (map (fn [[pid _]] [pid {:vested-ech 0 :vested-claims 0 :paused-claims 0}])
                                          partner-subnet-map))
         init-infra-stats {:upgrades-executed 0 :upgrade-stalls 0 :rotations-executed 0 :rotations-verified 0 :infra-draws []}
-        init-treas-stats {:bootstrap-drawn-ech 0 :core-team-vested-ech 0}]
+        init-treas-stats {:bootstrap-drawn-ech 0 :core-team-vested-ech 0}
+        init-builder-bals {:builder-larg-1 fabric/larg-initial-stake-ech
+                           :builder-larg-2 fabric/larg-initial-stake-ech
+                           :builder-larg-3 fabric/larg-initial-stake-ech}
+        init-monthly (into (sorted-map)
+                           (map (fn [m]
+                                  [m {:month m
+                                      :cleared-gmv-ech 0
+                                      :market-burned-ech 0
+                                      :per-capability-gmv-ech {}
+                                      :active-commercial-subnets (count base-commercial-subnets)
+                                      :active-providers 0
+                                      :sla-paused-partners 0}]))
+                           (range 1 37))]
     (loop [ep 1
            fab fabric
            mkt market
            partner-stats init-partner-stats
            infra-stats init-infra-stats
            treas-stats init-treas-stats
+           monthly-acc init-monthly
            all-conserved? true
            g4-state {:onboarded? false :seed-closed? false :anchor-threshold (long g4-anchor-threshold)}]
       (if (> ep n-epochs)
@@ -803,6 +892,9 @@
                                 (map (fn [lid]
                                        [lid (long (get-in mkt [:per-provider-earned-revenue-ech lid] 0))]))
                                 [:builder-larg-1 :builder-larg-2 :builder-larg-3])
+              builder-cashflow (market/compute-builder-cashflow fab mkt
+                                                                [:builder-larg-1 :builder-larg-2 :builder-larg-3]
+                                                                init-builder-bals)
               infra-bals (into (sorted-map)
                                (map (fn [[nid n]]
                                       [nid (long (get-in st [:ledger (:pubkey-hex n) :balance] 0))]))
@@ -819,6 +911,9 @@
                                        (or (:diagnostics fab) {})
                                        (or (:diagnostics mkt) {})
                                        (or (get-in fab [:bus :diagnostics]) {}))
+              monthly-vec (mapv (fn [m]
+                                  (update (get monthly-acc m) :per-capability-gmv-ech #(into (sorted-map) %)))
+                                (range 1 37))
               out {:scenario scenario
                    :seed (long seed)
                    :time-compression-factor c
@@ -840,14 +935,21 @@
                    :sunset-burned-ech (long (or (:sunset-custody-burned st) 0))
                    :subnet-fees-collected-ech (long (:total-subnet-fees-ech mkt 0))
                    :surge-priced-offers surge-count
+                   :endogenous-providers-entered (long (or (:endogenous-providers-entered mkt) 0))
+                   :endogenous-providers-exited (long (or (:endogenous-providers-exited mkt) 0))
                    :bus-seq (long (get-in fab [:bus :seq] 0))
                    :infra-validator-balances-ech infra-bals
                    :per-subnet-sla-bps per-sub-sla
                    :per-subnet-gmv-ech (into (sorted-map) (:per-subnet-gmv-ech mkt))
                    :per-subnet-cleared-orders (into (sorted-map) (:per-subnet-cleared-orders mkt))
+                   :per-provider-gmv-ech (into (sorted-map) (:per-provider-gmv-ech mkt))
+                   :per-capability-gmv-ech (into (sorted-map) (:per-capability-gmv-ech mkt))
                    :partner-vesting partner-summary
                    :larg-builder-sovereign-revenue-ech larg-bal
                    :larg-builder-earned-revenue-ech larg-earned
+                   :builder-cashflow builder-cashflow
+                   :calibration-anchors market/capability-calibration-anchors
+                   :monthly-market-telemetry monthly-vec
                    :g4-angels g4-state
                    :protocol-infra (-> infra-stats
                                        (dissoc :infra-draws)
@@ -867,7 +969,7 @@
                 (let [ch (charter-commercial-subnet fab-bus mkt {:subnet-id "root/markets/organic-agent-x"
                                                                  :epoch ep
                                                                  :unit-mult u-mult
-                                                                 :capability-types [:llm-inference :tac-auction-agent :artifact-storage]})]
+                                                                 :capability-types [:llm-inference :web-search-extract :sandbox-compute :tac-auction-agent :storage-bytes-at-rest]})]
                   [(:fabric ch) (:market ch)])
                 [fab-bus mkt])
               ;; 3. Commercial subnet halt injection (INV-5)
@@ -877,6 +979,8 @@
                             #{"root/markets/larg-tac"}
                             #{})
               ;; 4. Endogenous capability market clearing + single-block batch HTLC settlement
+              mkt-burn-before (long (or (:market-burned-ech fab-dyn) 0))
+              cap-gmv-before (or (:per-capability-gmv-ech mkt-dyn) {})
               reqs (generate-epoch-demand fab-dyn scenario ep scaled-cfg)
               clear-res (market/clear-market-epoch mkt-dyn reqs {:epoch ep :halted-subnets halted-subs})
               settle-res (market/settle-cleared-batches
@@ -886,9 +990,22 @@
                            :faucet-dac-id "faucet-dac"
                            :halted-subnets halted-subs})
               fab-mkt (:fabric settle-res)
-              mkt-next (:market settle-res)
+              mkt-settled (:market settle-res)
+              ;; 4b. V3 Secular cost drift (-20%/yr compute-bound, +6%/yr expertise-bound)
+              ;;     & Endogenous provider entry/exit (42B conserved)
+              mkt-drifted (market/step-secular-cost-drift mkt-settled {:time-compression-factor c})
+              ee-res (market/step-provider-entry-exit
+                      fab-mkt mkt-drifted
+                      {:epoch ep
+                       :entry-streak-epochs 3
+                       :exit-streak-epochs 5
+                       :max-endogenous-per-cap 3
+                       :halted-subnets halted-subs
+                       :unit-mult u-mult})
+              fab-ee (:fabric ee-res)
+              mkt-next (:market ee-res)
               ;; 5. Protocol subnet infra step (isolated PRNG stream + real :rotate-validator-set)
-              infra-res (step-protocol-infra-epoch fab-mkt ep scaled-cfg infra-stats)
+              infra-res (step-protocol-infra-epoch fab-ee ep scaled-cfg infra-stats)
               fab-infra (:fabric infra-res)
               infra-next (:infra-stats infra-res)
               ;; 6. Gradual Bootstrap drawdown (pre-sunset) + Core-Team linear vesting (post-cliff)
@@ -896,9 +1013,11 @@
               fab-treas (:fabric treas-res)
               tstats-next (:treas-stats treas-res)
               ;; 7. Real SLA-gated Genesis Partner vesting (isolated per-partner sub-vaults, no lump-sum catch-up)
+              paused-before (long (get-in fab-treas [:diagnostics :partner-vesting-sla-paused] 0))
               vest-res (step-partner-sla-vesting fab-treas mkt-next ep scaled-cfg halted-subs infra-next partner-stats)
               fab-vest (:fabric vest-res)
               pstats-next (:partner-stats vest-res)
+              paused-delta (- (long (get-in fab-vest [:diagnostics :partner-vesting-sla-paused] 0)) paused-before)
               ;; 8. Demand-gated conditional mint (idempotent if already ran on epoch ep's finalized block)
               ;;    + Year-3 Bootstrap Sunset Burn
               st-treas (state-machine/apply-epoch-treasury-boundary (:state fab-vest) ep)
@@ -908,6 +1027,28 @@
               g4-next (cond-> g4-state
                         (>= ep g4-onboard-ep) (assoc :onboarded? true)
                         (>= ep g4-close-ep) (assoc :seed-closed? true))
+              ;; 9b. Accumulate monthly endogenous market telemetry bucket (M1..M36)
+              m-idx (min 36 (max 1 (inc (quot (* (dec ep) 36) n-epochs))))
+              ep-gmv (long (:cleared-gmv-ech settle-res 0))
+              ep-burn (max 0 (- (long (or (:market-burned-ech fab-mkt) 0)) mkt-burn-before))
+              cap-gmv-after (or (:per-capability-gmv-ech mkt-settled) {})
+              ep-cap-deltas (reduce-kv (fn [acc k v]
+                                         (let [d (- (long v) (long (get cap-gmv-before k 0)))]
+                                           (if (pos? d) (assoc acc k d) acc)))
+                                       {}
+                                       cap-gmv-after)
+              active-subs (count (remove halted-subs (keys (:commercial-subnets fab-next))))
+              active-provs (count (distinct (map :provider-pubkey
+                                                 (filter #(= :active (:status %)) (vals (:offers mkt-next))))))
+              monthly-next (update monthly-acc m-idx
+                                   (fn [mb]
+                                     (-> mb
+                                         (update :cleared-gmv-ech + ep-gmv)
+                                         (update :market-burned-ech + ep-burn)
+                                         (update :per-capability-gmv-ech #(merge-with + % ep-cap-deltas))
+                                         (assoc :active-commercial-subnets active-subs
+                                                :active-providers active-provs)
+                                         (update :sla-paused-partners + paused-delta))))
               ;; 10. Verify exact 7-bucket 42B ECHO conservation on EVERY epoch (INV-2)
               ep-cons-ok? (true? (:ok? (fabric/verify-fabric-conservation fab-next)))]
           (recur (inc ep)
@@ -916,6 +1057,7 @@
                  pstats-next
                  infra-next
                  tstats-next
+                 monthly-next
                  (and all-conserved? ep-cons-ok?)
                  g4-next))))))
 

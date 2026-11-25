@@ -382,3 +382,217 @@
       (is (= 9048 (:attested-sla-bps after-1-timeout)))
       (is (> (:attested-sla-bps after-1-timeout) 8800))
       (is (< (:attested-sla-bps after-4-timeouts) 8800)))))
+
+;; =============================================================================
+;; V3 Capability-Market 12-Item Synthesis Tests (Strict TDD)
+;; =============================================================================
+
+(deftest v3-capability-catalog-and-calibration-anchors-test
+  (testing "V3 catalog splits storage into two distinct meters, includes 3-meter retrieval, output-token inference caching, separate eval judge/platform fee, and tags :formal-verify :unanchored-calibration-param"
+    (let [cat market/capability-catalog
+          anchors market/capability-calibration-anchors
+          weights market/capability-demand-weights]
+      ;; 1. Two storage meters
+      (is (= :recurring-epoch-rent (get-in cat [:storage-bytes-at-rest :billing-model])))
+      (is (= #{1 3 6} (get-in cat [:storage-bytes-at-rest :replication-factors])))
+      (is (= :per-task-escrow (get-in cat [:bandwidth-bytes-in-motion :billing-model])))
+      (is (> (double (get-in cat [:bandwidth-bytes-in-motion :ops-egress-share])) 0.5))
+      ;; Storage rent scales monotonically with replication factor r in {1, 3, 6}
+      (is (< (market/storage-rent-unit-price (:storage-bytes-at-rest cat) 1)
+             (market/storage-rent-unit-price (:storage-bytes-at-rest cat) 3)))
+      (is (< (market/storage-rent-unit-price (:storage-bytes-at-rest cat) 3)
+             (market/storage-rent-unit-price (:storage-bytes-at-rest cat) 6)))
+      ;; 2. Three-meter retrieval (:web-search-extract)
+      (let [wse (:web-search-extract cat)]
+        (is (= :per-task-escrow (:billing-model wse)))
+        (is (pos? (:query-ech wse)))
+        (is (pos? (:extract-ech wse)))
+        (is (pos? (:freshness-egress-ech wse)))
+        (is (= (:ref-price-ech wse) (market/web-search-extract-unit-price wse))))
+      ;; 3. Sandbox compute
+      (is (= :per-task-escrow (get-in cat [:sandbox-compute :billing-model])))
+      (is (= :compute-bound (get-in cat [:sandbox-compute :cost-curve])))
+      ;; 4. LLM inference with input-token caching (output tokens dominate scarce meter)
+      (let [llm (:llm-inference cat)
+            eff (market/effective-llm-unit-price llm)]
+        (is (>= (double (:cache-hit-rate llm)) 0.70))
+        (is (> (long (:output-token-ech llm)) (long (:effective-input-ech eff))))
+        (is (> (/ (double (:output-token-ech llm)) (double (:total-ech eff))) 0.80)))
+      ;; 5. Eval verify: judge cost separate from platform fee
+      (let [ev (:eval-verify cat)]
+        (is (pos? (:judge-cost-ech ev)))
+        (is (pos? (:platform-fee-ech ev)))
+        (is (= (:ref-price-ech ev) (market/eval-verify-unit-price ev))))
+      ;; 6. Formal verify explicitly tagged :unanchored-calibration-param
+      (is (= :unanchored-calibration-param (get-in cat [:formal-verify :price-anchor-status])))
+      (is (= :unanchored-calibration-param (get-in anchors [:formal-verify :price-anchor-status])))
+      (is (= :expertise-bound (get-in cat [:formal-verify :cost-curve])))
+      ;; 7. Legacy compatibility preserved
+      (doseq [k [:artifact-storage :tts-kokoro :stt-moonshine :inverse-game-eval :tac-auction-agent]]
+        (is (contains? cat k)))
+      ;; 8. Top-5 demand weights reflect synthesis ranking
+      (is (= 100 (reduce + 0 (vals weights))))
+      (is (> (get weights :llm-inference) (get weights :web-search-extract)))
+      (is (> (get weights :web-search-extract) (get weights :sandbox-compute)))
+      (is (> (get weights :sandbox-compute)
+             (+ (get weights :storage-bytes-at-rest) (get weights :bandwidth-bytes-in-motion))))
+      ;; Calibration anchors map covers every capability in catalog
+      (is (= (set (keys cat)) (set (keys anchors)))))))
+
+(defspec ^{:doc "V3 Venue/SLA tiers preserve strict ordering: economy < standard < premium in both price multiplier and default SLA, and register-offer applies tier defaults cleanly."}
+  v3-venue-sla-tiers-ordering-prop 25
+  (prop/for-all [ctype (gen/elements [:llm-inference :web-search-extract :sandbox-compute :eval-verify :formal-verify])]
+                (let [fab (fabric/init-fabric {:seed 101})
+                      pk (get-in fab [:light-nodes :builder-larg-1 :pubkey-hex])
+                      m (-> (market/init-market-state {:seed 101})
+                            (market/register-offer {:offer-id "o-econ" :capability-type ctype :venue-tier :economy
+                                                    :provider-id :builder-larg-1 :provider-pubkey pk :subnet-id "root/markets/larg-tac"})
+                            (market/register-offer {:offer-id "o-std" :capability-type ctype :venue-tier :standard
+                                                    :provider-id :builder-larg-1 :provider-pubkey pk :subnet-id "root/markets/larg-tac"})
+                            (market/register-offer {:offer-id "o-prem" :capability-type ctype :venue-tier :premium
+                                                    :provider-id :builder-larg-1 :provider-pubkey pk :subnet-id "root/markets/larg-tac"}))
+                      o-econ (get-in m [:offers "o-econ"])
+                      o-std (get-in m [:offers "o-std"])
+                      o-prem (get-in m [:offers "o-prem"])]
+                  (and (= :economy (:venue-tier o-econ))
+                       (= :standard (:venue-tier o-std))
+                       (= :premium (:venue-tier o-prem))
+                       (< (:attested-sla-bps o-econ) (:attested-sla-bps o-std))
+                       (< (:attested-sla-bps o-std) (:attested-sla-bps o-prem))
+                       (<= (:unit-price-ech o-econ) (:unit-price-ech o-std))
+                       (< (:unit-price-ech o-std) (:unit-price-ech o-prem))))))
+
+(defspec ^{:doc "V3 Failover/Workflow-Insurance bonus increases clearing utility when >=2 healthy redundant providers exist, while remaining 100% immune to max-wtp-ech and claimed-sla-bps."}
+  v3-failover-workflow-insurance-utility-prop 30
+  (prop/for-all [sla (gen/choose 8800 10000)
+                 price (gen/choose 50 1000)
+                 ref-price (gen/choose 50 1000)
+                 claimed-a (gen/choose 0 10000)
+                 claimed-b (gen/choose 0 10000)
+                 redundant-n (gen/choose 2 6)]
+                (let [offer-a {:attested-sla-bps sla :claimed-sla-bps claimed-a :unit-price-ech price}
+                      offer-b {:attested-sla-bps sla :claimed-sla-bps claimed-b :unit-price-ech price}
+                      u-solo (market/clearing-utility offer-a ref-price {:redundant-provider-count 1})
+                      u-failover (market/clearing-utility offer-a ref-price {:redundant-provider-count redundant-n})
+                      u-failover-b (market/clearing-utility offer-b ref-price {:redundant-provider-count redundant-n})]
+                  (and (> u-failover u-solo)
+                       (= u-failover u-failover-b)))))
+
+(defspec ^{:doc "V3 step-secular-cost-drift compounds compute-bound capabilities at -20%/yr and expertise-bound capabilities at +6%/yr cleanly across compression factor C."}
+  v3-secular-cost-drift-compute-vs-expertise-prop 20
+  (prop/for-all [c (gen/elements [12 24 72 144])]
+                (let [fab (fabric/init-fabric {:seed 202})
+                      pk (get-in fab [:light-nodes :builder-larg-1 :pubkey-hex])
+                      m0 (-> (market/init-market-state {:seed 202})
+                             (market/register-offer {:offer-id "o-compute" :capability-type :llm-inference
+                                                     :unit-price-ech 500 :marginal-cost-ech 200
+                                                     :provider-id :builder-larg-1 :provider-pubkey pk
+                                                     :subnet-id "root/markets/larg-tac"})
+                             (market/register-offer {:offer-id "o-expert" :capability-type :formal-verify
+                                                     :unit-price-ech 500 :marginal-cost-ech 200
+                                                     :provider-id :builder-larg-1 :provider-pubkey pk
+                                                     :subnet-id "root/markets/trustx-verify"}))
+                      steps-per-year (long (Math/round (/ 8760.0 (double c))))
+                      m1 (reduce (fn [m _] (market/step-secular-cost-drift m {:time-compression-factor c}))
+                                 m0
+                                 (range steps-per-year))
+                      mc-comp (get-in m1 [:offers "o-compute" :marginal-cost-ech])
+                      mc-exp (get-in m1 [:offers "o-expert" :marginal-cost-ech])]
+                  ;; After 1 year: compute 200 -> ~160 (-20%), expertise 200 -> ~212 (+6%)
+                  (and (<= 155 mc-comp 165)
+                       (<= 208 mc-exp 216)
+                       (< mc-comp 200)
+                       (> mc-exp 200)))))
+
+(deftest v3-endogenous-provider-entry-and-exit-conservation-test
+  (testing "Sustained high util (>80% & price > 1.2*MC) spawns a real Ed25519 Light Node funded with 250k ECHO conserving 42B; sustained low util (<20% & price <= MC) marks endogenous provider :exited with counted :diagnose"
+    (let [fab0 (fabric/init-fabric {:seed 303})
+          pk (get-in fab0 [:light-nodes :builder-larg-1 :pubkey-hex])
+          m0 (-> (market/init-market-state {:seed 303})
+                 (market/register-offer {:offer-id "o-hot"
+                                         :capability-type :sandbox-compute
+                                         :unit-price-ech 140
+                                         :marginal-cost-ech 50
+                                         :capacity-units-per-epoch 10
+                                         :provider-id :builder-larg-1
+                                         :provider-pubkey pk
+                                         :subnet-id "root/markets/larg-tac"}))
+          ;; Simulate 3 consecutive hot epochs (util = 0.95, price = 140 > 1.2*50 = 60)
+          m-hot (assoc-in m0 [:offers "o-hot" :last-utilization] 0.95)
+          {:keys [fabric market]}
+          (reduce (fn [{:keys [fabric market]} ep]
+                    (let [res (market/step-provider-entry-exit
+                               fabric
+                               (assoc-in market [:offers "o-hot" :last-utilization] 0.95)
+                               {:epoch ep :entry-streak-epochs 3 :exit-streak-epochs 3})]
+                      {:fabric (:fabric res) :market (:market res)}))
+                  {:fabric fab0 :market m-hot}
+                  [1 2 3])
+          entered-offers (filter (fn [[_ o]] (:endogenous? o)) (:offers market))
+          [endo-oid endo-offer] (first entered-offers)
+          endo-node (get-in fabric [:light-nodes (:provider-id endo-offer)])]
+      (is (= 1 (:endogenous-providers-entered market)))
+      (is (= 1 (count entered-offers)))
+      (is (some? endo-node))
+      (is (>= (get-in fabric [:state :ledger (:pubkey-hex endo-node) :balance] 0) market/min-node-stake-ech))
+      (is (:ok? (fabric/verify-fabric-conservation fabric)))
+      (is (pos? (get-in market [:diagnostics :provider-entered] 0)))
+      ;; Now drive the endogenous provider unprofitable (util = 0.05, price == MC) for 3 epochs -> :exited
+      (let [mc (:marginal-cost-ech endo-offer)
+            m-cold (-> market
+                       (assoc-in [:offers "o-hot" :last-utilization] 0.50)
+                       (assoc-in [:offers endo-oid :unit-price-ech] mc)
+                       (assoc-in [:offers endo-oid :last-utilization] 0.05))
+            res-exit (reduce (fn [{:keys [fabric market]} ep]
+                               (let [r (market/step-provider-entry-exit
+                                        fabric
+                                        (-> market
+                                            (assoc-in [:offers endo-oid :unit-price-ech] mc)
+                                            (assoc-in [:offers endo-oid :last-utilization] 0.05))
+                                        {:epoch ep :entry-streak-epochs 3 :exit-streak-epochs 3})]
+                                 {:fabric (:fabric r) :market (:market r)}))
+                             {:fabric fabric :market m-cold}
+                             [4 5 6])]
+        (is (= :exited (get-in (:market res-exit) [:offers endo-oid :status])))
+        (is (= 1 (:endogenous-providers-exited (:market res-exit))))
+        (is (pos? (get-in (:market res-exit) [:diagnostics :provider-exited] 0)))
+        (is (:ok? (fabric/verify-fabric-conservation (:fabric res-exit))))))))
+
+(deftest v3-per-provider-gmv-split-and-builder-cashflow-identity-test
+  (testing "Market tracks :per-provider-gmv-ech, :per-capability-gmv-ech, and exact builder cashflow identity (delta == 0)"
+    (let [fab0 (fabric/init-fabric {:seed 404})
+          b1-pk (get-in fab0 [:light-nodes :builder-larg-1 :pubkey-hex])
+          b2-pk (get-in fab0 [:light-nodes :builder-larg-2 :pubkey-hex])
+          treas-pk (get-in fab0 [:light-nodes :partner-larg-tac :pubkey-hex])
+          m0 (-> (market/init-market-state {:seed 404
+                                            :subnet-fee-bps 100
+                                            :subnet-treasuries {"root/markets/larg-tac" treas-pk}})
+                 (market/register-offer {:offer-id "offer-b1-search"
+                                         :capability-type :web-search-extract
+                                         :unit-price-ech 110
+                                         :marginal-cost-ech 40
+                                         :capacity-units-per-epoch 10
+                                         :provider-id :builder-larg-1
+                                         :provider-pubkey b1-pk
+                                         :subnet-id "root/markets/larg-tac"
+                                         :true-delivery-prob 1.0}))
+          req {:request-id "req-cf-1" :request-seq 1 :epoch 1
+               :buyer-id :builder-larg-2 :buyer-pubkey b2-pk
+               :capability-type :web-search-extract :units 5
+               :max-wtp-ech 200 :min-sla-bps 8000 :budget-ech 1000}
+          cl (market/clear-market-epoch m0 [req] {:epoch 1})
+          st (market/settle-cleared-batches fab0 (:market cl) (:cleared cl)
+                                            {:epoch 1 :escrow-ttl-epochs 3 :subnet-fee-bps 100})
+          mkt (:market st)
+          fab (:fabric st)
+          cf (market/compute-builder-cashflow fab mkt [:builder-larg-1 :builder-larg-2]
+                                              {:builder-larg-1 fabric/larg-initial-stake-ech
+                                               :builder-larg-2 fabric/larg-initial-stake-ech})]
+      (is (= 550 (get-in mkt [:per-provider-gmv-ech "offer-b1-search"])))
+      (is (= 550 (get-in mkt [:per-capability-gmv-ech :web-search-extract])))
+      (is (= 0 (get-in cf [:builder-larg-1 :identity-delta-ech])))
+      (is (= 0 (get-in cf [:builder-larg-2 :identity-delta-ech])))
+      (is (= 550 (get-in cf [:builder-larg-1 :earned-ech])))
+      (is (= 550 (get-in cf [:builder-larg-2 :buyer-spend-ech])))
+      (is (pos? (get-in cf [:builder-larg-1 :subnet-fees-paid-ech])))
+      (is (pos? (get-in cf [:builder-larg-1 :protocol-burns-paid-ech]))))))

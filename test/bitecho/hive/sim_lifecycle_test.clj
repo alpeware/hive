@@ -221,3 +221,38 @@
                (:cleared-gmv-ech (get by-scen :baseline-g4-angel-heavy))))
         (is (> (:cleared-gmv-ech (get by-scen :baseline-g4-angel-heavy))
                (:cleared-gmv-ech (get by-scen :bear-post-sunset-cliff))))))))
+
+;; =============================================================================
+;; V3 Capability-Market Lifecycle Integration Tests (Strict TDD)
+;; =============================================================================
+
+(deftest v3-lifecycle-telemetry-and-builder-cashflow-identity-test
+  (testing "V3 trial surfaces per-provider GMV, per-capability GMV (including V3 capabilities & recurring storage rent), exact builder cashflow identity (delta==0), endogenous entry/exit counters, calibration anchors, and 36-month endogenous market telemetry"
+    (let [res (lifecycle/run-full-network-trial
+               {:scenario :high-velocity-commercial
+                :seed 20261124
+                :time-compression-factor 72
+                :epochs 450})]
+      (is (true? (:all-epochs-conserved? res)))
+      (is (= 0 (:failed-receipts-count res)))
+      (is (map? (:per-provider-gmv-ech res)))
+      (is (pos? (count (:per-provider-gmv-ech res))))
+      (is (map? (:per-capability-gmv-ech res)))
+      ;; V3 capabilities cleared
+      (doseq [c [:llm-inference :web-search-extract :sandbox-compute :storage-bytes-at-rest :bandwidth-bytes-in-motion :eval-verify]]
+        (is (pos? (get-in res [:per-capability-gmv-ech c] 0))
+            (str "Expected positive V3 GMV for capability " c)))
+      ;; Exact builder cashflow identity for all 3 LARG builders
+      (is (map? (:builder-cashflow res)))
+      (doseq [b [:builder-larg-1 :builder-larg-2 :builder-larg-3]]
+        (is (= 0 (get-in res [:builder-cashflow b :identity-delta-ech]))
+            (str "Expected exact 0 cashflow identity delta for " b ", got " (get-in res [:builder-cashflow b]))))
+      ;; Endogenous provider counters & calibration anchors
+      (is (integer? (:endogenous-providers-entered res)))
+      (is (integer? (:endogenous-providers-exited res)))
+      (is (pos? (:endogenous-providers-entered res))
+          "High-velocity commercial scenario should trigger endogenous provider entry")
+      (is (map? (:calibration-anchors res)))
+      (is (= :unanchored-calibration-param (get-in res [:calibration-anchors :formal-verify :price-anchor-status])))
+      ;; 36-month endogenous monthly telemetry for seed_to_round piping
+      (is (= 36 (count (:monthly-market-telemetry res)))))))

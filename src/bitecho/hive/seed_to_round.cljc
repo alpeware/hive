@@ -539,3 +539,273 @@
      :anchor-cliff-interrogation anchor-cliff
      :deflationary-crossover-interrogation defl-interrogation
      :sweep-root-cid sweep-root-cid}))
+
+;; =============================================================================
+;; V3 Endogenous Seed-to-A Piping (`run-endogenous-seed-to-round`)
+;; =============================================================================
+
+(def ^:const MICRO-COHORT-AGENTS
+  "Reference micro-cohort node count in `bitecho.hive.sim.lifecycle` (6 infra + 2 home + 17 light)."
+  25)
+
+(defn- build-endogenous-monthly-series
+  "Extracts or synthesizes the 36-month endogenous market series from `trial-telemetry`.
+   Uses exact `:monthly-market-telemetry` when present; otherwise derives an even 36-month
+   series from `:cleared-gmv-ech`, `:per-capability-gmv-ech`, `:per-subnet-gmv-ech`, and
+   `:partner-vesting`."
+  [trial-telemetry]
+  (let [raw-monthly (:monthly-market-telemetry trial-telemetry)]
+    (if (and (sequential? raw-monthly) (= 36 (count raw-monthly)))
+      (vec raw-monthly)
+      (let [tot-gmv (long (or (:cleared-gmv-ech trial-telemetry) 0))
+            tot-burn (long (or (:market-burned-ech trial-telemetry) 0))
+            per-cap (or (:per-capability-gmv-ech trial-telemetry) {})
+            sub-cnt (max 1 (count (or (:per-subnet-gmv-ech trial-telemetry) {})))
+            pv (or (:partner-vesting trial-telemetry) {})
+            paused-total (reduce + 0 (map #(long (or (:paused-claims %) 0)) (vals pv)))]
+        (mapv (fn [m]
+                {:month m
+                 :cleared-gmv-ech (quot tot-gmv 36)
+                 :market-burned-ech (quot tot-burn 36)
+                 :per-capability-gmv-ech (into (sorted-map)
+                                               (map (fn [[k v]] [k (quot (long v) 36)]))
+                                               per-cap)
+                 :active-commercial-subnets sub-cnt
+                 :active-providers (+ 8 (long (or (:endogenous-providers-entered trial-telemetry) 0)))
+                 :sla-paused-partners (if (and (>= m 14) (<= m 24) (pos? paused-total)) 1 0)})
+              (range 1 37))))))
+
+(defn run-endogenous-seed-to-round
+  "V3 Endogenous Seed-to-A-Round engine: replaces the exogenous
+   `base-monthly-sci-burn * sci-growth-rate * demand-shock` formula with endogenous
+   monthly cleared GMV, per-capability burn `R_t`, active commercial subnet count,
+   and SLA-gated partner vesting derived directly from `lifecycle/run-full-network-trial`
+   telemetry (plus optional `:agent-scale-multiplier` or `:target-active-agents` to
+   project from the 25-node micro-cohort to target autonomous-agent fleet sizes, e.g.
+   550-2,700 active autonomous agents).
+
+   Preserves exact 42,000,000,000 ECHO 7-bucket conservation every month (M1..M36)
+   and evaluates Series-A qualification, deflationary crossover month, and Year-3
+   bootstrap sunset burn."
+  [{:keys [trial-telemetry agent-scale-multiplier target-active-agents
+           k-bps tau-bps bootstrap-drawdown-rate]
+    :or {k-bps 5000
+         tau-bps 50
+         bootstrap-drawdown-rate 0.045}}]
+  (let [scale (double (cond
+                        (some? agent-scale-multiplier) (max 0.01 (double agent-scale-multiplier))
+                        (some? target-active-agents) (/ (double (max 1 (long target-active-agents)))
+                                                        (double MICRO-COHORT-AGENTS))
+                        :else 1.0))
+        target-agents (long (or target-active-agents
+                                (Math/round (* (double MICRO-COHORT-AGENTS) scale))))
+        k-clamped (long (min 5000 (max 0 (long k-bps))))
+        tau-clamped (long (min 200 (max 0 (long tau-bps))))
+        monthly-series (build-endogenous-monthly-series trial-telemetry)
+        g4-info (or (:g4-angels trial-telemetry) {:onboarded? true :seed-closed? true})
+        infra-stalls (long (or (get-in trial-telemetry [:protocol-infra :upgrade-stalls]) 0))
+        total-partners (max 1 (count (or (:partner-vesting trial-telemetry) {:p1 {} :p2 {} :p3 {} :p4 {} :p5 {} :p6 {} :p7 {}})))
+        init-state {:month 0
+                    :epoch 0
+                    :circulating 0
+                    :bootstrap-locked BOOTSTRAP-GENESIS
+                    :team-locked TEAM-GENESIS
+                    :partners-locked PARTNERS-GENESIS
+                    :ecosystem-locked ECOSYSTEM-GENESIS
+                    :unminted-conditional UNMINTED-CONDITIONAL
+                    :permanently-burned 0
+                    :fleet-nodes MICRO-COHORT-AGENTS
+                    :active-commercial-subnets (long (or (:active-commercial-subnets (first monthly-series)) 4))
+                    :trailing-burned-revenue 0
+                    :cumulative-burned-revenue 0
+                    :cumulative-cleared-gmv-ech 0
+                    :cumulative-per-capability-burn-ech {}
+                    :angels-onboarded? false
+                    :seed-closed? false
+                    :sla-paused-months 0
+                    :rollbacks infra-stalls
+                    :first-deflationary-month nil}]
+    (loop [m 1
+           st init-state
+           rev-hist []
+           trace []]
+      (if (> m 36)
+        (let [final-m (last trace)
+              all-conserved? (every? #(= HARD-CAP-ECHO (sum-supply-buckets %)) trace)
+              year3-sunset (long (:sunset-burned-this-month final-m))
+              mean-monthly-gmv (/ (double (:cumulative-cleared-gmv-ech st)) 36.0)
+              a-round-ok? (and all-conserved?
+                               (:angels-onboarded? st)
+                               (:seed-closed? st)
+                               (>= (long (:fleet-nodes st)) 60)
+                               (>= (long (:cumulative-burned-revenue st)) 1500000000)
+                               (<= (long (:rollbacks st)) 4))
+              root-cid (env/sha256-str (pr-str {:spec-cid genesis/GENESIS-SPEC-CID
+                                                :scenario (:scenario trial-telemetry)
+                                                :seed (:seed trial-telemetry)
+                                                :scale scale
+                                                :k-bps k-clamped
+                                                :tau-bps tau-clamped
+                                                :final-circulating (:circulating st)
+                                                :cumulative-gmv (:cumulative-cleared-gmv-ech st)}))]
+          {:spec-cid genesis/GENESIS-SPEC-CID
+           :theta-anchor-seed BIP009-THETA-SEED
+           :hard-cap HARD-CAP-ECHO
+           :mode :endogenous-capability-market
+           :scenario (:scenario trial-telemetry)
+           :seed (:seed trial-telemetry)
+           :agent-scale-multiplier scale
+           :target-active-agents target-agents
+           :k-bps k-clamped
+           :tau-bps tau-clamped
+           :all-months-conserved? all-conserved?
+           :a-round-qualified? a-round-ok?
+           :angels-onboarded? (:angels-onboarded? st)
+           :seed-closed? (:seed-closed? st)
+           :final-fleet-nodes (:fleet-nodes st)
+           :final-active-commercial-subnets (:active-commercial-subnets st)
+           :final-circulating (:circulating st)
+           :total-permanently-burned (:permanently-burned st)
+           :year3-sunset-burned year3-sunset
+           :cumulative-cleared-gmv-ech (:cumulative-cleared-gmv-ech st)
+           :mean-monthly-gmv-ech (long (Math/round mean-monthly-gmv))
+           :cumulative-burned-revenue (:cumulative-burned-revenue st)
+           :cumulative-per-capability-burn-ech (into (sorted-map) (:cumulative-per-capability-burn-ech st))
+           :sla-paused-months (:sla-paused-months st)
+           :rollbacks (:rollbacks st)
+           :first-deflationary-month (:first-deflationary-month st)
+           :endogenous-root-cid root-cid
+           :monthly-trace trace})
+        (let [m-rec (nth monthly-series (dec m))
+              epoch (* m EPOCHS-PER-MONTH)
+              ;; Endogenous commercial subnet count & scaled active fleet progression
+              active-subs (max 1 (long (or (:active-commercial-subnets m-rec) 4)))
+              ramp-frac (/ (double m) 36.0)
+              next-fleet (max MICRO-COHORT-AGENTS
+                              (long (Math/round (+ (double MICRO-COHORT-AGENTS)
+                                                   (* (- (double target-agents) (double MICRO-COHORT-AGENTS))
+                                                      ramp-frac)))))
+              ;; Arc milestones grounded in trial's G4 Angels state
+              angels-now? (or (:angels-onboarded? st) (and (>= m 6) (true? (:onboarded? g4-info))))
+              seed-now? (or (:seed-closed? st) (and angels-now? (>= m 12) (true? (:seed-closed? g4-info))))
+              ;; Bootstrap Reserve 3-yr algorithmic decay drawdown
+              decay-factor (max 0.15 (- 1.0 (* 0.022 (double (dec m)))))
+              b-raw (long (Math/floor (* (double (:bootstrap-locked st))
+                                         (double bootstrap-drawdown-rate)
+                                         decay-factor)))
+              b-draw (if (< m 36) (min (long (:bootstrap-locked st)) b-raw) 0)
+              ;; Core Team: 1-yr cliff (m >= 12), 4-yr linear vest
+              team-delta (cond
+                           (< m 12) 0
+                           (= m 12) (min (long (:team-locked st)) (quot TEAM-GENESIS 4))
+                           :else (min (long (:team-locked st)) (quot TEAM-GENESIS 48)))
+              ;; Genesis Partners: strictly SLA-gated by endogenous :sla-paused-partners
+              paused-cnt (long (or (:sla-paused-partners m-rec) 0))
+              healthy-partner-frac (max 0.0 (/ (double (max 0 (- total-partners paused-cnt)))
+                                               (double total-partners)))
+              base-partner-tranche (cond
+                                     (< m 12) 0
+                                     (= m 12) (min (long (:partners-locked st)) (quot PARTNERS-GENESIS 3))
+                                     :else (min (long (:partners-locked st)) (quot PARTNERS-GENESIS 36)))
+              partners-delta (min (long (:partners-locked st))
+                                  (long (Math/floor (* (double base-partner-tranche) healthy-partner-frac))))
+              ;; Ecosystem & Grants: milestone-gated by active commercial subnets
+              eco-delta (if (and (>= active-subs 4) (zero? (mod m 3)))
+                          (min (long (:ecosystem-locked st)) (quot ECOSYSTEM-GENESIS 18))
+                          0)
+              circ-after-release (+ (long (:circulating st)) b-draw team-delta partners-delta eco-delta)
+              ;; Endogenous monthly cleared GMV & per-capability burn R_t
+              gmv-m (long (Math/round (* (double (or (:cleared-gmv-ech m-rec) 0)) scale)))
+              per-cap-gmv-m (into (sorted-map)
+                                  (map (fn [[k v]] [k (long (Math/round (* (double v) scale)))]))
+                                  (or (:per-capability-gmv-ech m-rec) {}))
+              per-cap-burn-m (into (sorted-map)
+                                   (map (fn [[k v]] [k (long (quot (* (long v) tau-clamped) 10000))]))
+                                   per-cap-gmv-m)
+              r-raw (max (long (quot (* gmv-m tau-clamped) 10000))
+                         (reduce + 0 (vals per-cap-burn-m)))
+              r-burned (min circ-after-release (max 0 r-raw))
+              trailing-rev (if (empty? rev-hist)
+                             0
+                             (long (quot (reduce + 0 (take-last 2 rev-hist)) 2)))
+              ;; Demand-gated conditional mint M_t <= floor((k_bps / 10000) * R_trailing)
+              m-cap (long (Math/floor (* (/ (double k-clamped) 10000.0) (double trailing-rev))))
+              m-minted (min (long (:unminted-conditional st)) m-cap)
+              ;; Year-3 hard sunset burn at Month 36 (epoch 26,280)
+              b-after-draw (- (long (:bootstrap-locked st)) b-draw)
+              sunset-burn (if (= m 36) b-after-draw 0)
+              b-locked-final (- b-after-draw sunset-burn)
+              circ-final (+ (- circ-after-release r-burned) m-minted)
+              net-supply-delta (- circ-final (long (:circulating st)))
+              first-defl-m (or (:first-deflationary-month st)
+                               (when (and (> m 12) (neg? net-supply-delta)) m))
+              snap {:month m
+                    :epoch epoch
+                    :circulating circ-final
+                    :bootstrap-locked b-locked-final
+                    :team-locked (- (long (:team-locked st)) team-delta)
+                    :partners-locked (- (long (:partners-locked st)) partners-delta)
+                    :ecosystem-locked (- (long (:ecosystem-locked st)) eco-delta)
+                    :unminted-conditional (- (long (:unminted-conditional st)) m-minted)
+                    :permanently-burned (+ (long (:permanently-burned st)) r-burned sunset-burn)
+                    :cleared-gmv-this-month gmv-m
+                    :per-capability-burn-this-month per-cap-burn-m
+                    :active-commercial-subnets active-subs
+                    :bootstrap-draw-delta b-draw
+                    :team-vested-delta team-delta
+                    :partners-vested-delta partners-delta
+                    :ecosystem-released-delta eco-delta
+                    :burned-revenue-this-month r-burned
+                    :trailing-burned-revenue trailing-rev
+                    :minted-this-month m-minted
+                    :sunset-burned-this-month sunset-burn
+                    :net-supply-delta net-supply-delta
+                    :sla-paused-partners paused-cnt
+                    :fleet-nodes next-fleet
+                    :angels-onboarded? angels-now?
+                    :seed-closed? seed-now?}
+              st' (assoc st
+                         :month m
+                         :epoch epoch
+                         :circulating (:circulating snap)
+                         :bootstrap-locked (:bootstrap-locked snap)
+                         :team-locked (:team-locked snap)
+                         :partners-locked (:partners-locked snap)
+                         :ecosystem-locked (:ecosystem-locked snap)
+                         :unminted-conditional (:unminted-conditional snap)
+                         :permanently-burned (:permanently-burned snap)
+                         :fleet-nodes next-fleet
+                         :active-commercial-subnets active-subs
+                         :trailing-burned-revenue trailing-rev
+                         :cumulative-burned-revenue (+ (long (:cumulative-burned-revenue st)) r-burned)
+                         :cumulative-cleared-gmv-ech (+ (long (:cumulative-cleared-gmv-ech st)) gmv-m)
+                         :cumulative-per-capability-burn-ech
+                         (merge-with + (:cumulative-per-capability-burn-ech st) per-cap-burn-m)
+                         :angels-onboarded? angels-now?
+                         :seed-closed? seed-now?
+                         :sla-paused-months (+ (long (:sla-paused-months st)) (if (pos? paused-cnt) 1 0))
+                         :first-deflationary-month first-defl-m)]
+          (recur (inc m) st' (conj rev-hist r-burned) (conj trace snap)))))))
+
+(defn run-endogenous-scale-sweep
+  "Sweeps `run-endogenous-seed-to-round` across a vector of target autonomous-agent fleet
+   sizes (default `[550 1500 2700]` active autonomous agents) from a single lifecycle trial."
+  [{:keys [trial-telemetry target-agent-counts k-bps tau-bps bootstrap-drawdown-rate]
+    :or {target-agent-counts [550 1500 2700]
+         k-bps 5000
+         tau-bps 50
+         bootstrap-drawdown-rate 0.045}}]
+  (let [results (mapv (fn [n-agents]
+                        (run-endogenous-seed-to-round
+                         {:trial-telemetry trial-telemetry
+                          :target-active-agents n-agents
+                          :k-bps k-bps
+                          :tau-bps tau-bps
+                          :bootstrap-drawdown-rate bootstrap-drawdown-rate}))
+                      target-agent-counts)]
+    {:spec-cid genesis/GENESIS-SPEC-CID
+     :scenario (:scenario trial-telemetry)
+     :seed (:seed trial-telemetry)
+     :target-agent-counts (vec target-agent-counts)
+     :all-conserved? (every? :all-months-conserved? results)
+     :results results}))
