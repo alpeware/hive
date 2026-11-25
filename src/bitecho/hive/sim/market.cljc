@@ -58,9 +58,15 @@
   "Hard cap on commercial subnet take rate (<= 500 bps = 5.0%)."
   500)
 
-(def default-sla-ema-alpha
-  "Default exponential moving average smoothing factor for escrow-attested SLA."
-  0.25)
+(def default-sla-prior-alpha
+  "Bayesian/Beta reliability prior alpha0 (19 / (19 + 1) = 9500 bps initial attested SLA).
+   Prevents single-timeout death spirals for 99% honest providers (9500 -> 9048 bps > 8800)
+   while penalizing 50% Sybil providers below 8800 bps within ~3-4 timeouts."
+  19)
+
+(def default-sla-prior-beta
+  "Bayesian/Beta reliability prior beta0."
+  1)
 
 ;; =============================================================================
 ;; 2. Market State & Capability Offer Management
@@ -77,6 +83,7 @@
                          (max 0 (long (or (:subnet-fee-bps opts) 100))))
     :subnet-treasuries (or (:subnet-treasuries opts) {})
     :offers {}
+    :pending-refunds []
     :escrow-seq 0
     :total-cleared-gmv-ech 0
     :total-cleared-orders 0
@@ -87,6 +94,7 @@
     :per-subnet-cleared-orders {}
     :per-subnet-released {}
     :per-subnet-refunded {}
+    :per-provider-earned-revenue-ech {}
     :diagnostics {}}))
 
 (defn register-offer
@@ -94,13 +102,17 @@
    Note: `:attested-sla-bps` is initialized independently of any self-reported `:claimed-sla-bps`."
   [market {:keys [offer-id capability-type unit-price-ech marginal-cost-ech
                   capacity-units-per-epoch provider-id provider-pubkey subnet-id
-                  attested-sla-bps claimed-sla-bps true-delivery-prob ema-alpha]}]
+                  attested-sla-bps claimed-sla-bps true-delivery-prob
+                  sla-prior-alpha sla-prior-beta]}]
   (let [norm-pk (circle/normalize-spki-pubkey provider-pubkey)
         cat (get capability-catalog capability-type {:ref-price-ech 150 :marginal-cost-ech 50})
         mc (max 1 (long (or marginal-cost-ech (:marginal-cost-ech cat))))
         price (max mc (long (or unit-price-ech (:ref-price-ech cat))))
         cap (max 1 (long (or capacity-units-per-epoch 10)))
-        init-sla (min 10000 (max 0 (long (or attested-sla-bps 9500))))
+        a0 (max 1 (long (or sla-prior-alpha default-sla-prior-alpha)))
+        b0 (max 1 (long (or sla-prior-beta default-sla-prior-beta)))
+        prior-sla (long (Math/round (* 10000.0 (/ (double a0) (double (+ a0 b0))))))
+        init-sla (min 10000 (max 0 (long (or attested-sla-bps prior-sla))))
         delivery-p (min 1.0 (max 0.0 (double (if (some? true-delivery-prob) true-delivery-prob 0.98))))]
     (if-not (and (string? offer-id) (some? norm-pk) (contains? capability-catalog capability-type))
       (update-in market [:diagnostics :invalid-offer-rejected] (fnil inc 0))
@@ -116,7 +128,8 @@
                  :attested-sla-bps init-sla
                  :claimed-sla-bps (long (or claimed-sla-bps init-sla))
                  :true-delivery-prob delivery-p
-                 :ema-alpha (double (or ema-alpha default-sla-ema-alpha))
+                 :sla-prior-alpha a0
+                 :sla-prior-beta b0
                  :total-released 0
                  :total-refunded 0
                  :last-utilization 0.0}))))
@@ -183,16 +196,18 @@
     (assoc offer :unit-price-ech new-price :last-utilization u)))
 
 (defn update-attested-sla
-  "Updates an offer's escrow-attested SLA EMA strictly from verified on-chain
-   `:release-intent` (delivered? = true -> 10000 bps) or `:refund-intent` (delivered? = false -> 0 bps)."
+  "Updates an offer's escrow-attested SLA using a Bayesian/Beta reliability estimator
+   `round(10000 * (alpha0 + delivered) / (alpha0 + beta0 + delivered + refunded))`
+   strictly from verified on-chain `:release-intent` or `:refund-intent` outcomes."
   [offer delivered?]
-  (let [prev (double (or (:attested-sla-bps offer) 9500))
-        alpha (double (or (:ema-alpha offer) default-sla-ema-alpha))
-        obs (if delivered? 10000.0 0.0)
-        next-sla (min 10000 (max 0 (long (Math/round (+ (* (- 1.0 alpha) prev) (* alpha obs))))))]
-    (-> offer
-        (assoc :attested-sla-bps next-sla)
-        (update (if delivered? :total-released :total-refunded) (fnil inc 0)))))
+  (let [offer' (update offer (if delivered? :total-released :total-refunded) (fnil inc 0))
+        a0 (max 1 (long (or (:sla-prior-alpha offer') default-sla-prior-alpha)))
+        b0 (max 1 (long (or (:sla-prior-beta offer') default-sla-prior-beta)))
+        rel (long (or (:total-released offer') 0))
+        ref (long (or (:total-refunded offer') 0))
+        next-sla (min 10000 (max 0 (long (Math/round (* 10000.0 (/ (double (+ a0 rel))
+                                                                   (double (+ a0 b0 rel ref))))))))]
+    (assoc offer' :attested-sla-bps next-sla)))
 
 ;; =============================================================================
 ;; 4. Per-Epoch Clearing Engine (FIFO Request Order, Halt-Aware Diversion)
@@ -224,9 +239,10 @@
                  min-sla (long (or (:min-sla-bps req) 0))
                  budget (long (or (:budget-ech req) (* max-wtp units)))
                  ref-p (get-in capability-catalog [ctype :ref-price-ech] 150)
-                 ;; All active offers for this capability on non-halted subnets
+                 ;; All active offers for this capability on non-halted subnets (forbidding self-trades)
                  active-offers (filter (fn [o]
                                          (and (= ctype (:capability-type o))
+                                              (not= (:buyer-pubkey req) (:provider-pubkey o))
                                               (not (contains? halted (:subnet-id o)))))
                                        (vals (:offers market)))
                  ;; Offers matching price & SLA terms
@@ -300,20 +316,22 @@
 
 (defn- apply-signed-transfer
   "Executes a real signed `:transfer` receipt via `account/create-transfer` and
-   `fabric/apply-finalized-receipts` (zero off-cap minting, zero extra take)."
+   `fabric/apply-finalized-receipts` (zero off-cap minting, zero extra take, zero silent failures)."
   [fabric {:keys [sender-pubkey sender-privkey receiver-pubkey amount epoch receipt-id]}]
   (let [st (:state fabric)
         sender-acct (get-in st [:ledger sender-pubkey])
         cur-bal (long (or (:balance sender-acct) 0))
         cur-seq (long (or (:seq sender-acct) 0))
-        amt (long amount)]
-    (if (and (pos? amt) (>= cur-bal amt) sender-privkey)
+        cur-deps (vec (or (:deps sender-acct) []))
+        amt (long amount)
+        failed-before (long (or (:failed-receipts-count st) 0))]
+    (if (and (pos? amt) (>= cur-bal amt) sender-privkey (not= sender-pubkey receiver-pubkey))
       (let [tx (account/create-transfer sender-privkey
                                         {:sender sender-pubkey
                                          :receiver receiver-pubkey
                                          :amount amt
                                          :seq (inc cur-seq)
-                                         :deps []
+                                         :deps cur-deps
                                          :network-uri (:network-uri fabric)})
             pb (fressian/encode-canonical {:transfer (into {} tx)})
             res (fabric/apply-finalized-receipts
@@ -321,9 +339,21 @@
                  [{:receipt-id receipt-id
                    :type :transfer
                    :payload-bytes pb
-                   :epoch (long epoch)}]
-                 (long epoch))]
-        {:ok? true :fabric (:fabric res) :amount amt :effects (:effects res)})
+                   :epoch (max 0 (dec (long epoch)))}]
+                 (long epoch))
+            failed-after (long (or (get-in res [:fabric :state :failed-receipts-count]) 0))]
+        (if (and (:ok? res) (= failed-before failed-after))
+          {:ok? true :fabric (:fabric res) :amount amt :effects (:effects res)}
+          (let [diag {:effect :diagnose
+                      :reason :transfer-receipt-failed
+                      :receipt-id receipt-id
+                      :sender sender-pubkey
+                      :receiver receiver-pubkey
+                      :amount amt}]
+            {:ok? false
+             :fabric (update-in (:fabric res) [:diagnostics :transfer-receipt-failed] (fnil inc 0))
+             :amount 0
+             :effects (conj (vec (:effects res)) diag)})))
       {:ok? false :fabric fabric :amount 0 :effects []})))
 
 (defn replenish-buyer-liquidity
@@ -394,161 +424,252 @@
       (some (fn [[_ n]] (when (= pubkey-hex (:pubkey-hex n)) (get-in n [:keypair :private])))
             (:infra-nodes fabric))))
 
+(defn- refund-matured?
+  "Returns true when a pending timed-out escrow can be refunded at real `block-epoch = current-epoch`
+   (`state-machine` sets `closing-ep = (dec block-epoch)` and requires `(> closing-ep expires-epoch)`)."
+  [pending current-epoch]
+  (> (max 0 (dec (long current-epoch))) (long (:expires-epoch pending))))
+
+(defn- apply-matured-refund-stats
+  "Updates market SLA, timeout counts, and counted `:diagnose` effects for matured `:refund-intent`s.
+   Increments `:escrow-timeout-refunded` in ONE place only (on `market`, never duplicated on `fabric`)."
+  [market matured]
+  (reduce
+   (fn [{:keys [market effects]} {:keys [escrow-id subnet-id provider-pubkey amount offer-ids]}]
+     (let [mkt' (reduce (fn [m oid]
+                          (if (contains? (:offers m) oid)
+                            (update-in m [:offers oid] update-attested-sla false)
+                            m))
+                        (-> market
+                            (update :total-timeout-refunds (fnil inc 0))
+                            (update-in [:per-subnet-refunded subnet-id] (fnil inc 0))
+                            (update-in [:diagnostics :escrow-timeout-refunded] (fnil inc 0)))
+                        offer-ids)
+           diag {:effect :diagnose
+                 :reason :escrow-timeout-refunded
+                 :escrow-id escrow-id
+                 :subnet-id subnet-id
+                 :provider-pubkey provider-pubkey
+                 :amount amount}]
+       {:market mkt'
+        :effects (conj effects diag)}))
+   {:market market :effects []}
+   matured))
+
+(defn settle-pending-refunds
+  "Settles all matured timed-out escrows in `(:pending-refunds market)` via real `:refund-intent`
+   receipts at the real current `block-epoch = current-epoch` (never time-traveling to a future epoch)."
+  [fabric market current-epoch]
+  (let [ep (long current-epoch)
+        closing-ep (max 0 (dec ep))
+        pending (vec (or (:pending-refunds market) []))
+        matured (filterv #(refund-matured? % ep) pending)
+        still-pending (filterv #(not (refund-matured? % ep)) pending)]
+    (if (empty? matured)
+      {:fabric fabric
+       :market market
+       :timeout-refunds 0
+       :effects []}
+      (let [ref-receipts (mapv (fn [{:keys [escrow-id buyer-pubkey]}]
+                                 {:receipt-id (str "rcpt-ref-" escrow-id)
+                                  :type :refund-intent
+                                  :escrow-id escrow-id
+                                  :sender buyer-pubkey
+                                  :epoch closing-ep})
+                               matured)
+            ref-res (fabric/apply-finalized-receipts fabric ref-receipts ep)
+            {:keys [market effects]} (apply-matured-refund-stats
+                                      (assoc market :pending-refunds still-pending)
+                                      matured)]
+        {:fabric (:fabric ref-res)
+         :market market
+         :timeout-refunds (count matured)
+         :effects (into (vec (:effects ref-res)) effects)}))))
+
 (defn settle-cleared-batches
-  "Settles cleared capability orders in bounded per-(buyer, provider, subnet) batches through
-   real `bitecho.state-machine` one-shot HTLC escrows (`:lock-intent` -> `:release-intent` on
-   delivery or `:refund-intent` on timeout/failure):
-   - Credits provider's canonical hex pubkey in `[:ledger pk]`
-   - Burns `tau = 50 bps` (`min 1 ECHO`) reconciled into `:total-burned`
+  "Settles matured pending refunds and cleared capability orders in bounded per-(buyer, provider, subnet)
+   batches through real `bitecho.state-machine` one-shot HTLC escrows at the REAL `block-epoch = ep`:
+   - Settles matured `:pending-refunds` via `:refund-intent` at real `block-epoch = ep` (zero time-travel)
+   - Forks delivery RNG by canonical content key `(subnet-id, ep, buyer-pk, prov-pk)` (never global batch index)
+   - Executes all matured `:refund-intent`, `:lock-intent`, and `:release-intent` receipts for epoch `ep`
+     in a SINGLE finalized block at `block-epoch = ep` so `apply-epoch-treasury-boundary` sees 100% of
+     epoch `ep`'s settlement takes
+   - Queues timed-out escrows in `[:pending-refunds]` until matured at real `block-epoch`
    - Transfers commercial `subnet_fee` (`<= 500 bps`) to subnet treasury via real signed `:transfer`
-   - Updates offer `:attested-sla-bps` EMA strictly from verified release/refund outcomes."
+   - Updates offer `:attested-sla-bps` via Bayesian/Beta estimator strictly from verified outcomes."
   [fabric market cleared-orders opts]
   (let [ep (long (or (:epoch opts) 1))
+        closing-ep (max 0 (dec ep))
         ttl (max 1 (long (or (:escrow-ttl-epochs opts) 3)))
         subnet-fee-bps (min max-commercial-subnet-fee-bps
                             (max 0 (long (or (:subnet-fee-bps opts) (:subnet-fee-bps market) 0))))
         faucet-dac-id (:faucet-dac-id opts)
         edge-fx-pool (:edge-fx-pool opts)
         halted (set (or (:halted-subnets opts) #{}))
-        ;; Group into bounded per-(buyer, provider, subnet) batches in deterministic sorted order
+        ;; 1. Partition matured vs still-pending timeout refunds
+        pending-all (vec (or (:pending-refunds market) []))
+        matured (filterv #(refund-matured? % ep) pending-all)
+        still-pending (filterv #(not (refund-matured? % ep)) pending-all)
+        ref-receipts (mapv (fn [{:keys [escrow-id buyer-pubkey]}]
+                             {:receipt-id (str "rcpt-ref-" escrow-id)
+                              :type :refund-intent
+                              :escrow-id escrow-id
+                              :sender buyer-pubkey
+                              :epoch closing-ep})
+                           matured)
+        ;; 2. Group cleared orders into deterministic sorted per-(buyer, provider, subnet) batches
         grouped (group-by (juxt :buyer-pubkey :provider-pubkey :subnet-id) cleared-orders)
-        batch-keys (sort (keys grouped))]
-    (reduce
-     (fn [acc [b-idx [buyer-pk prov-pk subnet-id]]]
-       (let [orders (get grouped [buyer-pk prov-pk subnet-id])
-             gross (reduce + 0 (map #(long (:gross-ech %)) orders))
-             offer-ids (vec (distinct (map :offer-id orders)))
-             primary-offer (get-in (:market acc) [:offers (first offer-ids)])
-             fab0 (:fabric acc)
-             ;; Ensure closed-loop buyer liquidity
-             rep (replenish-buyer-liquidity fab0 {:buyer-pubkey buyer-pk
-                                                  :needed-ech gross
-                                                  :epoch ep
-                                                  :faucet-dac-id faucet-dac-id
-                                                  :edge-fx-pool edge-fx-pool})
-             fab1 (:fabric rep)]
-         (if-not (:ok? rep)
-           (-> acc
-               (assoc :fabric fab1)
-               (update :effects into (:effects rep)))
-           (let [next-es (inc (long (get-in acc [:market :escrow-seq] 0)))
-                 escrow-id (str "escrow-ep" ep "-b" next-es)
-                 preimage (str "preimage|" (:network-genesis-cid fab1) "|" escrow-id)
-                 d-hash (str/lower-case (basalt/bytes->hex (crypto/sha256 (fressian/utf8->bytes preimage))))
-                 expires-ep (+ ep ttl)
-                 ;; 1. Lock one-shot HTLC escrow
-                 lock-res (fabric/apply-finalized-receipts
-                           fab1
-                           [{:receipt-id (str "rcpt-lock-" escrow-id)
-                             :type :lock-intent
-                             :escrow-id escrow-id
-                             :payer buyer-pk
-                             :receiver prov-pk
-                             :amount gross
-                             :deliverable-hash d-hash
-                             :created-epoch ep
-                             :expires-epoch expires-ep
-                             :epoch ep}]
-                           ep)
-                 fab-locked (:fabric lock-res)
-                 ;; 2. Deterministic delivery draw from isolated subnet-epoch PRNG path
-                 settle-rng (crypto/fork-random (:master-rng fab-locked)
-                                                (str "market/subnet/" subnet-id "/ep/" ep "/batch/" b-idx))
-                 delivery-prob (if (contains? halted subnet-id)
-                                 0.0
-                                 (double (or (:true-delivery-prob primary-offer) 0.98)))
-                 delivered? (< (crypto/next-double settle-rng) delivery-prob)]
-             (if delivered?
-               ;; 3a. Delivery succeeded -> :release-intent + optional commercial subnet_fee transfer
-               (let [prov-bal-before (get-in fab-locked [:state :ledger prov-pk :balance] 0)
-                     rel-res (fabric/apply-finalized-receipts
-                              fab-locked
-                              [{:receipt-id (str "rcpt-rel-" escrow-id)
-                                :type :release-intent
-                                :escrow-id escrow-id
-                                :preimage preimage
-                                :sender prov-pk
-                                :epoch ep}]
-                              ep)
-                     fab-rel (:fabric rel-res)
-                     prov-bal-after (get-in fab-rel [:state :ledger prov-pk :balance] 0)
-                     prov-net (max 0 (- prov-bal-after prov-bal-before))
-                     treas-pk (get-in (:market acc) [:subnet-treasuries subnet-id])
-                     prov-priv (when (and (pos? subnet-fee-bps) treas-pk (not= treas-pk prov-pk))
-                                 (find-node-privkey fab-rel prov-pk))
-                     raw-sub-fee (if (and prov-priv (pos? subnet-fee-bps))
-                                   (min prov-net (quot (* gross subnet-fee-bps) 10000))
-                                   0)
-                     fee-res (if (pos? raw-sub-fee)
-                               (apply-signed-transfer fab-rel
-                                                      {:sender-pubkey prov-pk
-                                                       :sender-privkey prov-priv
-                                                       :receiver-pubkey treas-pk
-                                                       :amount raw-sub-fee
-                                                       :epoch ep
-                                                       :receipt-id (str "rcpt-subfee-" escrow-id)})
-                               {:ok? true :fabric fab-rel :amount 0 :effects []})
-                     fab-final (:fabric fee-res)
-                     sub-fee-paid (long (:amount fee-res))
-                     mkt' (reduce (fn [m oid]
-                                    (if (contains? (:offers m) oid)
-                                      (update-in m [:offers oid] update-attested-sla true)
-                                      m))
-                                  (-> (:market acc)
-                                      (assoc :escrow-seq next-es)
-                                      (update :total-cleared-gmv-ech (fnil + 0) gross)
-                                      (update :total-cleared-orders (fnil + 0) (count orders))
-                                      (update :total-subnet-fees-ech (fnil + 0) sub-fee-paid)
-                                      (update-in [:per-subnet-gmv-ech subnet-id] (fnil + 0) gross)
-                                      (update-in [:per-subnet-cleared-orders subnet-id] (fnil + 0) (count orders))
-                                      (update-in [:per-subnet-released subnet-id] (fnil inc 0)))
-                                  offer-ids)]
+        batch-keys (sort (keys grouped))
+        ;; 3. Pre-replenish each distinct buyer for their total gross spend this epoch
+        buyer-totals (reduce (fn [acc bk]
+                               (let [[buyer-pk _ _] bk
+                                     gross (reduce + 0 (map #(long (:gross-ech %)) (get grouped bk)))]
+                                 (update acc buyer-pk (fnil + 0) gross)))
+                             (sorted-map)
+                             batch-keys)
+        {:keys [fab-rep rep-effects funded-buyers]}
+        (reduce-kv (fn [acc buyer-pk needed]
+                     (let [rep (replenish-buyer-liquidity (:fab-rep acc)
+                                                          {:buyer-pubkey buyer-pk
+                                                           :needed-ech needed
+                                                           :epoch ep
+                                                           :faucet-dac-id faucet-dac-id
+                                                           :edge-fx-pool edge-fx-pool})]
+                       (-> acc
+                           (assoc :fab-rep (:fabric rep))
+                           (update :rep-effects into (:effects rep))
+                           (cond-> (:ok? rep) (update :funded-buyers conj buyer-pk)))))
+                   {:fab-rep fabric :rep-effects [] :funded-buyers #{}}
+                   buyer-totals)
+        ;; 4. Build lock/release receipts and new pending refunds for all funded batches
+        {:keys [escrow-seq batch-receipts delivered-batches new-pending]}
+        (reduce
+         (fn [acc [buyer-pk prov-pk subnet-id]]
+           (if-not (contains? funded-buyers buyer-pk)
+             acc
+             (let [orders (get grouped [buyer-pk prov-pk subnet-id])
+                   gross (reduce + 0 (map #(long (:gross-ech %)) orders))
+                   offer-ids (vec (distinct (map :offer-id orders)))
+                   primary-offer (get-in market [:offers (first offer-ids)])
+                   next-es (inc (long (:escrow-seq acc)))
+                   escrow-id (str "escrow-ep" ep "-b" next-es)
+                   preimage (str "preimage|" (:network-genesis-cid fab-rep) "|" escrow-id)
+                   d-hash (str/lower-case (basalt/bytes->hex (crypto/sha256 (fressian/utf8->bytes preimage))))
+                   expires-ep (+ closing-ep ttl)
+                   lock-rcpt {:receipt-id (str "rcpt-lock-" escrow-id)
+                              :type :lock-intent
+                              :escrow-id escrow-id
+                              :payer buyer-pk
+                              :receiver prov-pk
+                              :amount gross
+                              :deliverable-hash d-hash
+                              :created-epoch closing-ep
+                              :expires-epoch expires-ep
+                              :epoch closing-ep}
+                   ;; Isolated canonical content-keyed PRNG fork (never global batch index!)
+                   settle-rng (crypto/fork-random (:master-rng fab-rep)
+                                                  (str "market/subnet/" subnet-id
+                                                       "/ep/" ep
+                                                       "/buyer/" (subs buyer-pk 0 16)
+                                                       "/prov/" (subs prov-pk 0 16)))
+                   delivery-prob (if (contains? halted subnet-id)
+                                   0.0
+                                   (double (or (:true-delivery-prob primary-offer) 0.98)))
+                   delivered? (< (crypto/next-double settle-rng) delivery-prob)]
+               (if delivered?
+                 (let [rel-rcpt {:receipt-id (str "rcpt-rel-" escrow-id)
+                                 :type :release-intent
+                                 :escrow-id escrow-id
+                                 :preimage preimage
+                                 :sender prov-pk
+                                 :epoch closing-ep}]
+                   (-> acc
+                       (assoc :escrow-seq next-es)
+                       (update :batch-receipts into [lock-rcpt rel-rcpt])
+                       (update :delivered-batches conj {:escrow-id escrow-id
+                                                        :buyer-pubkey buyer-pk
+                                                        :provider-pubkey prov-pk
+                                                        :provider-id (:provider-id (first orders))
+                                                        :subnet-id subnet-id
+                                                        :gross gross
+                                                        :orders orders
+                                                        :offer-ids offer-ids})))
                  (-> acc
-                     (assoc :fabric fab-final :market mkt')
-                     (update :settled-batches inc)
-                     (update :cleared-gmv-ech + gross)
-                     (update :subnet-fees-ech + sub-fee-paid)
-                     (update :effects into (concat (:effects lock-res) (:effects rel-res) (:effects fee-res)))))
-
-               ;; 3b. Delivery failed / timed out -> 100% :refund-intent + counted :diagnose
-               ;; Note: `state-machine` sets `closing-ep = (dec block-epoch)` and requires
-               ;; `(> closing-ep expires-epoch)`, so `block-epoch = (+ expires-ep 2)`.
-               (let [refund-ep (inc expires-ep)
-                     refund-block-ep (+ expires-ep 2)
-                     ref-res (fabric/apply-finalized-receipts
-                              fab-locked
-                              [{:receipt-id (str "rcpt-ref-" escrow-id)
-                                :type :refund-intent
-                                :escrow-id escrow-id
-                                :sender buyer-pk
-                                :epoch refund-ep}]
-                              refund-block-ep)
-                     fab-ref (update-in (:fabric ref-res) [:diagnostics :escrow-timeout-refunded] (fnil inc 0))
-                     diag {:effect :diagnose
-                           :reason :escrow-timeout-refunded
-                           :escrow-id escrow-id
-                           :subnet-id subnet-id
-                           :provider-pubkey prov-pk
-                           :amount gross}
-                     mkt' (reduce (fn [m oid]
-                                    (if (contains? (:offers m) oid)
-                                      (update-in m [:offers oid] update-attested-sla false)
-                                      m))
-                                  (-> (:market acc)
-                                      (assoc :escrow-seq next-es)
-                                      (update :total-timeout-refunds (fnil inc 0))
-                                      (update-in [:per-subnet-refunded subnet-id] (fnil inc 0))
-                                      (update-in [:diagnostics :escrow-timeout-refunded] (fnil inc 0)))
-                                  offer-ids)]
-                 (-> acc
-                     (assoc :fabric fab-ref :market mkt')
-                     (update :timeout-refunds inc)
-                     (update :effects into (conj (vec (concat (:effects lock-res) (:effects ref-res))) diag)))))))))
-     {:fabric fabric
-      :market market
-      :settled-batches 0
-      :timeout-refunds 0
-      :cleared-gmv-ech 0
-      :subnet-fees-ech 0
-      :effects []}
-     (map-indexed vector batch-keys))))
+                     (assoc :escrow-seq next-es)
+                     (update :batch-receipts conj lock-rcpt)
+                     (update :new-pending conj {:escrow-id escrow-id
+                                                :buyer-pubkey buyer-pk
+                                                :provider-pubkey prov-pk
+                                                :subnet-id subnet-id
+                                                :amount gross
+                                                :expires-epoch expires-ep
+                                                :offer-ids offer-ids}))))))
+         {:escrow-seq (long (:escrow-seq market 0))
+          :batch-receipts []
+          :delivered-batches []
+          :new-pending []}
+         batch-keys)
+        ;; 5. Execute all matured refunds + locks + releases in ONE finalized block at real block-epoch = ep
+        all-block-receipts (into ref-receipts batch-receipts)
+        block-res (if (seq all-block-receipts)
+                    (fabric/apply-finalized-receipts fab-rep all-block-receipts ep)
+                    {:ok? true :fabric fab-rep :effects []})
+        fab-settled (:fabric block-res)
+        ;; 6. Update market stats for matured refunds (single-place diagnostic counting)
+        mkt-with-pending (assoc market
+                                :escrow-seq escrow-seq
+                                :pending-refunds (into still-pending new-pending))
+        {:keys [market effects]} (apply-matured-refund-stats mkt-with-pending matured)
+        ;; 7. Apply delivered batch stats + optional commercial subnet_fee signed transfers
+        final-acc
+        (reduce
+         (fn [acc {:keys [escrow-id provider-pubkey provider-id subnet-id gross orders offer-ids]}]
+           (let [fab-cur (:fabric acc)
+                 treas-pk (get-in (:market acc) [:subnet-treasuries subnet-id])
+                 prov-priv (when (and (pos? subnet-fee-bps) treas-pk (not= treas-pk provider-pubkey))
+                             (find-node-privkey fab-cur provider-pubkey))
+                 ;; Net credited to provider from this escrow (99.5% after 50 bps protocol take)
+                 est-net (max 0 (- gross (max 1 (quot (* gross 50) 10000))))
+                 raw-sub-fee (if (and prov-priv (pos? subnet-fee-bps))
+                               (min est-net (quot (* gross subnet-fee-bps) 10000))
+                               0)
+                 fee-res (if (pos? raw-sub-fee)
+                           (apply-signed-transfer fab-cur
+                                                  {:sender-pubkey provider-pubkey
+                                                   :sender-privkey prov-priv
+                                                   :receiver-pubkey treas-pk
+                                                   :amount raw-sub-fee
+                                                   :epoch ep
+                                                   :receipt-id (str "rcpt-subfee-" escrow-id)})
+                           {:ok? true :fabric fab-cur :amount 0 :effects []})
+                 sub-fee-paid (long (:amount fee-res))
+                 mkt' (reduce (fn [m oid]
+                                (if (contains? (:offers m) oid)
+                                  (update-in m [:offers oid] update-attested-sla true)
+                                  m))
+                              (-> (:market acc)
+                                  (update :total-cleared-gmv-ech (fnil + 0) gross)
+                                  (update :total-cleared-orders (fnil + 0) (count orders))
+                                  (update :total-subnet-fees-ech (fnil + 0) sub-fee-paid)
+                                  (update-in [:per-subnet-gmv-ech subnet-id] (fnil + 0) gross)
+                                  (update-in [:per-subnet-cleared-orders subnet-id] (fnil + 0) (count orders))
+                                  (update-in [:per-subnet-released subnet-id] (fnil inc 0))
+                                  (cond-> (some? provider-id)
+                                    (update-in [:per-provider-earned-revenue-ech provider-id] (fnil + 0) gross)))
+                              offer-ids)]
+             (-> acc
+                 (assoc :fabric (:fabric fee-res) :market mkt')
+                 (update :settled-batches inc)
+                 (update :cleared-gmv-ech + gross)
+                 (update :subnet-fees-ech + sub-fee-paid)
+                 (update :effects into (:effects fee-res)))))
+         {:fabric fab-settled
+          :market market
+          :settled-batches 0
+          :timeout-refunds (count matured)
+          :pending-timeouts (count new-pending)
+          :cleared-gmv-ech 0
+          :subnet-fees-ech 0
+          :effects (vec (concat rep-effects (:effects block-res) effects))}
+         delivered-batches)]
+    final-acc))

@@ -41,18 +41,32 @@
 ;; =============================================================================
 
 (deftest inv2-full-36-month-conservation-and-sunset-burn-test
-  (testing "Full 36-month compressed run (C=72, 365+ epochs) conserves 42B ECHO on EVERY epoch and triggers Year-3 Bootstrap Sunset Burn"
+  (testing "Full 36-month+ compressed run (C=72, 450 epochs) conserves 42B ECHO on EVERY epoch, zero failed receipts, all 6 validators minted, real NetworkBus & validator rotations, and Year-3 Bootstrap Sunset Burn"
     (let [res (lifecycle/run-full-network-trial
                {:scenario :baseline-g4-angel-heavy
                 :seed 20261124
                 :time-compression-factor 72
-                :epochs 370})]
+                :epochs 450
+                :return-fabric? true})]
       (is (true? (:all-epochs-conserved? res)))
       (is (true? (get-in res [:final-conservation :ok?])))
       (is (= 42000000000 (get-in res [:final-conservation :total-cap-ech])))
+      (is (= 0 (get-in res [:fabric :state :failed-receipts-count])) "Zero failed receipts across entire lifecycle")
+      (is (= 0 (:failed-receipts-count res)))
+      (is (every? #(some? (:subnet-instance %)) (vals (get-in res [:fabric :commercial-subnets])))
+          "Every commercial subnet must have a valid :subnet-instance anchored to bitecho.org/infra")
+      (is (pos? (get-in res [:fabric :bus :seq])) "NetworkBus must route real signed envelopes")
+      (is (pos? (get-in res [:protocol-infra :rotations-verified])) "Validator set rotations must verify & apply")
+      (is (pos? (:bootstrap-drawn-ech res)) "Bootstrap vault must draw down gradually before sunset")
+      (is (pos? (:core-team-vested-ech res)) "Core-Team vault must vest linearly after cliff")
       (is (pos? (:sunset-burned-ech res)) "Year-3 bootstrap sunset burn must fire at scaled epoch 26,280")
       (is (pos? (:cleared-gmv-ech res)) "Endogenous capability market must clear non-zero GMV")
-      (is (pos? (:total-burned-ech res)) "Protocol settlement take must burn ECHO")
+      (is (pos? (:market-burned-ech res)) "Market settlement take must burn ECHO")
+      (is (pos? (:vesting-vault-burned-ech res)) "Vault spends must burn ECHO")
+      (is (= (:total-burned-ech res) (+ (:market-burned-ech res) (:vesting-vault-burned-ech res))))
+      (is (= 6 (count (:infra-validator-balances-ech res))))
+      (is (every? pos? (vals (:infra-validator-balances-ech res)))
+          (str "ALL 6 Infra Validators must receive non-zero ECHO mints, got " (:infra-validator-balances-ech res)))
       (is (true? (get-in res [:g4-angels :onboarded?])))
       (is (true? (get-in res [:g4-angels :seed-closed?]))))))
 
@@ -111,17 +125,24 @@
                    :epochs 250})
           base-larg-paused (get-in r-base [:partner-vesting :partner-larg-tac :paused-claims] 0)
           halt-larg-paused (get-in r-halt [:partner-vesting :partner-larg-tac :paused-claims] 0)
+          base-larg-vested (get-in r-base [:partner-vesting :partner-larg-tac :vested-ech] 0)
+          halt-larg-vested (get-in r-halt [:partner-vesting :partner-larg-tac :vested-ech] 0)
+          base-midi-vested (get-in r-base [:partner-vesting :partner-midi-sim :vested-ech] 0)
           halt-midi-paused (get-in r-halt [:partner-vesting :partner-midi-sim :paused-claims] 0)
           halt-midi-vested (get-in r-halt [:partner-vesting :partner-midi-sim :vested-ech] 0)
           base-midi-gmv (get-in r-base [:per-subnet-gmv-ech "root/markets/midi-sim"] 0)
           halt-midi-gmv (get-in r-halt [:per-subnet-gmv-ech "root/markets/midi-sim"] 0)]
       (is (true? (:all-epochs-conserved? r-halt)))
-      ;; Only :partner-larg-tac experiences SLA-paused vesting claims
+      (is (= 0 (:failed-receipts-count r-halt)))
+      ;; Only :partner-larg-tac experiences SLA-paused vesting claims AND measurably lower vested ECHO (no lump-sum catch-up)
       (is (> halt-larg-paused base-larg-paused))
+      (is (< halt-larg-vested base-larg-vested)
+          (str "Paused epochs must reduce M36 vested ECHO for :partner-larg-tac without lump-sum catch-up: halt=" halt-larg-vested " base=" base-larg-vested))
       (is (= 0 halt-midi-paused))
-      (is (pos? halt-midi-vested))
-      ;; Traffic diverts from halted larg-tac to healthy sibling commercial subnet(s)
-      (is (>= halt-midi-gmv base-midi-gmv))
+      (is (= base-midi-vested halt-midi-vested) "Healthy sibling :partner-midi-sim vesting must be untouched")
+      ;; Traffic strictly diverts from halted larg-tac to healthy sibling commercial subnet(s)
+      (is (> halt-midi-gmv base-midi-gmv)
+          (str "Expected diverted GMV strictly > baseline on midi-sim: halt=" halt-midi-gmv " base=" base-midi-gmv))
       ;; Protocol infra never stalls due to commercial subnet halt
       (is (= (get-in r-base [:protocol-infra :upgrade-stalls])
              (get-in r-halt [:protocol-infra :upgrade-stalls])))
@@ -163,25 +184,40 @@
       (is (= :revoked (get-in fab-after [:state :entity-descriptors "root/austin/larg-builders/builder-larg-1" :status])))
       ;; LARG builder's earned sovereign market balance is 100% untouched!
       (is (= builder-bal-before builder-bal-after))
-      (is (>= builder-bal-after fabric/larg-initial-stake-ech)))))
+      (is (>= builder-bal-after fabric/larg-initial-stake-ech))
+      ;; Attempting to revoke a sovereign id/<pk-cid> during dissolution MUST be rejected with :sovereign-root-non-revocable
+      (let [sov-path (str "id/" (get-in fab-before [:light-nodes :builder-larg-1 :pubkey-cid]))
+            bad-diss (lifecycle/dissolve-commercial-circle
+                      fab-before
+                      {:circle-path "root/austin/larg-builders"
+                       :seat-lease-paths [sov-path]
+                       :child-vault-id "vault:root/ecosystem/builder-larg-1"
+                       :parent-vault-id "vault:root/ecosystem-reserve"})]
+        (is (false? (:ok? bad-diss)))
+        (is (= :sovereign-root-non-revocable (:error bad-diss)))
+        (is (pos? (get-in (:fabric bad-diss) [:diagnostics :sovereign-root-non-revocable] 0)))
+        (is (not= :revoked (get-in (:fabric bad-diss) [:state :entity-descriptors sov-path :status])))))))
 
 ;; =============================================================================
 ;; Multi-Scenario CRN Sweep (All 5 Scenarios + G4 Anchor Threshold Sweep)
 ;; =============================================================================
 
 (deftest multi-scenario-crn-sweep-test
-  (testing "All 5 canonical scenarios execute cleanly with exact 42B conservation and expected comparative dynamics"
+  (testing "All 5 canonical scenarios execute cleanly with exact 42B conservation, zero failed receipts, and expected comparative dynamics"
     (let [sweep (lifecycle/run-scenario-sweep
                  {:scenarios lifecycle/all-scenarios
                   :seeds [20261124]
                   :time-compression-factor 144
-                  :epochs 190})]
+                  :epochs 230})]
       (is (= 5 (count (:results sweep))))
       (doseq [r (:results sweep)]
         (is (true? (:all-epochs-conserved? r)) (str "Conservation failed in " (:scenario r)))
+        (is (= 0 (:failed-receipts-count r)) (str "Unexpected failed receipts in " (:scenario r)))
         (is (string? (:state-root-cid r)))
         (is (= 64 (count (:state-root-cid r)))))
-      ;; High-velocity commercial should clear strictly more GMV than bear-post-sunset-cliff
+      ;; High-velocity commercial > baseline > bear-post-sunset-cliff (post-sunset divergence!)
       (let [by-scen (into {} (map (juxt :scenario identity) (:results sweep)))]
         (is (> (:cleared-gmv-ech (get by-scen :high-velocity-commercial))
+               (:cleared-gmv-ech (get by-scen :baseline-g4-angel-heavy))))
+        (is (> (:cleared-gmv-ech (get by-scen :baseline-g4-angel-heavy))
                (:cleared-gmv-ech (get by-scen :bear-post-sunset-cliff))))))))

@@ -7,6 +7,7 @@
             [bitecho.circles.mc-harness :as mc-harness]
             [bitecho.circles.vault :as vault]
             [bitecho.core.circle :as circle]
+            [bitecho.core.data :as data]
             [bitecho.core.subnet :as subnet]
             [bitecho.crypto :as crypto]
             [bitecho.economy.puzzle :as puzzle]
@@ -162,14 +163,26 @@
                           (mapv :pubkey-hex (vals (:light-nodes fab-b))))))))
 
 (deftest inv3-shared-encrypted-roundtrip-deterministic-test
-  (testing "3-arity encrypt-shared-descriptor uses deterministic :nonce-bytes and round-trips cleanly"
+  (testing "3-arity encrypt-shared-descriptor uses deterministic :nonce-bytes, covers :seat-lease, round-trips cleanly, and NEVER stores plaintext :shared-encrypted descriptors in :blob-store"
     (let [fab (fabric/init-fabric {:seed 4242})
           enc-entry (get-in fab [:encrypted-descriptors "root/austin/advisors"])
-          dec-res (circle/decrypt-shared-descriptor (:envelope enc-entry) (:group-key-bytes enc-entry))]
+          seat-entry (get-in fab [:encrypted-descriptors "root/austin/larg-builders/builder-larg-1"])
+          g4-entry (get-in fab [:encrypted-descriptors "root/angels/g4"])
+          dec-res (circle/decrypt-shared-descriptor (:envelope enc-entry) (:group-key-bytes enc-entry))
+          dec-seat (circle/decrypt-shared-descriptor (:envelope seat-entry) (:group-key-bytes seat-entry))
+          adv-plain (get-in fab [:state :entity-descriptors "root/austin/advisors"])
+          adv-plain-cid (:blob/cid (data/make-blob (fressian/encode-canonical adv-plain) "application/fressian"))
+          adv-env-cid (:blob/cid (data/make-blob (fressian/encode-canonical (:envelope enc-entry)) "application/fressian"))
+          blobs (get-in fab [:blob-store :entries])]
       (is (some? enc-entry))
+      (is (some? seat-entry))
+      (is (some? g4-entry))
       (is (:ok? dec-res))
+      (is (:ok? dec-seat))
       (is (= :shared-encrypted (get-in dec-res [:descriptor :visibility])))
-      (is (= 48 (count (get-in enc-entry [:envelope :nonce-hex])))))))
+      (is (= 48 (count (get-in enc-entry [:envelope :nonce-hex]))))
+      (is (contains? blobs adv-env-cid) "Encrypted envelope must be stored in :blob-store")
+      (is (not (contains? blobs adv-plain-cid)) "Plaintext :shared-encrypted descriptor must NEVER be stored in :blob-store"))))
 
 ;; =============================================================================
 ;; INV-6 (MUT-10): Strict Persistent Vault vs One-Shot Task Escrow Separation
@@ -202,6 +215,8 @@
       (is (= :vault-refund-forbidden (:error rej)))
       (is (false? (:valid? eval-res)))
       (is (= :vault-refund-forbidden (:error eval-res)))
+      (is (false? (:ok? sm-res)))
+      (is (pos? (get-in (:fabric sm-res) [:diagnostics :failed-receipts] 0)))
       (is (pos? (get-in (:fabric sm-res) [:state :diagnostics :vault-refund-forbidden] 0)))
       (is (= (:balance v) (get-in (:fabric sm-res) [:state :vaults vid :balance])))
       (is (:ok? (fabric/verify-fabric-conservation (:fabric sm-res))))))
@@ -300,15 +315,15 @@
         op-pks (set (concat (map :pubkey-hex (vals (:infra-nodes fab)))
                             (map :pubkey-hex (vals (:home-nodes fab)))
                             (map :pubkey-hex (vals (:light-nodes fab)))))
-        twin-pks (:advisory-twin-pubkeys fab)
+        twin-pks (get-in fab [:state :advisory-twin-pubkeys])
         sample-twin (first (vals (:advisory-twins fab)))
         sample-op (get-in fab [:light-nodes :founder-simon])
         net-uri (:network-uri fab)
         gen-cid (:network-genesis-cid fab)]
-    (testing "Operational sim keys are strictly disjoint from shadow :advisory-twin-pubkeys"
+    (testing "Operational sim keys are strictly disjoint from single-authority :state :advisory-twin-pubkeys"
+      (is (nil? (:advisory-twin-pubkeys fab)) "Rule 4: no split-authority top-level :advisory-twin-pubkeys")
       (is (pos? (count twin-pks)))
-      (is (empty? (set/intersection op-pks twin-pks)))
-      (is (= twin-pks (get-in fab [:state :advisory-twin-pubkeys]))))
+      (is (empty? (set/intersection op-pks twin-pks))))
 
     (testing "Grow-only advisory-twin registry rejects shrinking transitions (INV-C5)"
       (let [shrunk (disj twin-pks (first twin-pks))
@@ -627,7 +642,7 @@
                             (assoc-in [:entity-descriptors "root/temp-boot-child"]
                                       {:entity-kind :circle :path "root/temp-boot-child" :vault-id c-vid}))
           round {:lead-link-pubkey founder-pk :quorum-size 1 :ballots {founder-pk :consent}}
-          ctx {:advisory-twin-pubkeys (:advisory-twin-pubkeys fab)}
+          ctx {:advisory-twin-pubkeys (get-in fab [:state :advisory-twin-pubkeys])}
           ;; Raw f1eef45c circle/dissolve-circle succeeds and launders :bootstrap principal into :ecosystem vault!
           raw-res (circle/dissolve-circle st-with-child
                                           {:circle-path "root/temp-boot-child"

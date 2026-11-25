@@ -275,6 +275,38 @@
      :outputs outputs
      :signatures sigs}))
 
+(defn build-multisig-vault-solution
+  "Constructs a signed solution map for `vault/canonical-multisig-treasury-puzzle-source`
+   against `vault-id` in `fabric`, releasing `release-amount` to `receiver-pubkey` and
+   relocking any remainder to the same puzzle-hash."
+  [{:keys [fabric vault-id receiver-pubkey release-amount next-puzzle-hash signers]}]
+  (let [st (:state fabric)
+        v (get-in st [:vaults vault-id])
+        bal (long (:balance v))
+        rel-amt (long release-amount)
+        relock-amt (- bal rel-amt)
+        next-ph (or next-puzzle-hash (:puzzle-hash v))
+        outputs (if (pos? relock-amt)
+                  [{:type :release :receiver receiver-pubkey :amount rel-amt}
+                   {:type :relock :amount relock-amt :next-puzzle-hash next-ph}]
+                  [{:type :release :receiver receiver-pubkey :amount rel-amt}])
+        digest (vault/treasury-spend-digest
+                {:network-uri (:network-uri st)
+                 :network-genesis-cid (:network-genesis-cid st)
+                 :vault-id vault-id
+                 :puzzle-hash (:puzzle-hash v)
+                 :vault-seq (:vault-seq v)
+                 :outputs outputs
+                 :next-puzzle-hash next-ph})
+        sigs (into (sorted-map)
+                   (map (fn [node]
+                          (let [pk (:pubkey-hex node)
+                                priv (get-in node [:keypair :private])]
+                            [pk (str/lower-case (basalt/bytes->hex (crypto/sign priv digest)))])))
+                   signers)]
+    {:outputs outputs
+     :signatures sigs}))
+
 ;; =============================================================================
 ;; 4. Pure In-Memory NetworkBus (Deterministic Fault Injection + Zero Silent Drops)
 ;; =============================================================================
@@ -561,13 +593,14 @@
                       {:path "root/austin/advisors" :parent "root" :vis :shared-encrypted :vault-id "vault:root/partners-reserve" :bucket :partners :alloc 2100000000}
                       {:path "root/austin/research" :parent "root" :vis :shared-encrypted :vault-id "vault:root/partners-reserve" :bucket :partners :alloc 840000000}
                       {:path "root/austin/larg-builders" :parent "root" :vis :shared-encrypted :vault-id "vault:root/ecosystem-reserve" :bucket :ecosystem :alloc 315000000}
-                      {:path "root/markets/larg-tac" :parent "root" :vis :public :vault-id "vault:root/ecosystem-faucet" :bucket :ecosystem :alloc 0}
-                      {:path "root/markets/midi-sim" :parent "root" :vis :public :vault-id "vault:root/ecosystem-faucet" :bucket :ecosystem :alloc 0}
-                      {:path "root/markets/clear-games" :parent "root" :vis :public :vault-id "vault:root/ecosystem-faucet" :bucket :ecosystem :alloc 0}
-                      {:path "root/markets/trustx-verify" :parent "root" :vis :public :vault-id "vault:root/ecosystem-faucet" :bucket :ecosystem :alloc 0}
+                      {:path "root/markets/larg-tac" :parent "root" :vis :public :vault-id "vault:root/markets/larg-tac" :bucket :ecosystem :alloc 0}
+                      {:path "root/markets/midi-sim" :parent "root" :vis :public :vault-id "vault:root/markets/midi-sim" :bucket :ecosystem :alloc 0}
+                      {:path "root/markets/clear-games" :parent "root" :vis :public :vault-id "vault:root/markets/clear-games" :bucket :ecosystem :alloc 0}
+                      {:path "root/markets/trustx-verify" :parent "root" :vis :public :vault-id "vault:root/markets/trustx-verify" :bucket :ecosystem :alloc 0}
                       {:path "root/angels/g4" :parent "root" :vis :shared-encrypted :vault-id "vault:root/partners-reserve" :bucket :partners :alloc 0}]
         init-acc {:descriptors {} :encrypted {} :blob-store (data/init-blob-store)}
-        ;; 1. Circle descriptors (+ deterministic 3-arity encryption for :shared-encrypted)
+        ;; 1. Circle descriptors (+ deterministic 3-arity encryption for :shared-encrypted;
+        ;;    NEVER store plaintext :shared-encrypted descriptors in :blob-store)
         acc1 (reduce
               (fn [acc {:keys [path parent vis vault-id bucket alloc]}]
                 (let [desc (circle/create-entity-descriptor
@@ -596,20 +629,19 @@
                   (when-not (:ok? v-res)
                     (throw (ex-info "Genesis circle descriptor failed verification"
                                     {:path path :error (:error v-res)})))
-                  (let [desc' (assoc desc :cid (:cid v-res))
-                        store' (put-descriptor-blob (:blob-store acc) desc')]
+                  (let [desc' (assoc desc :cid (:cid v-res))]
                     (if (= :shared-encrypted vis)
                       (let [gk (derive-random-bytes master-rng (str "enc/group-key/" path) 32)
-                            nonce (derive-random-bytes master-rng (str "enc/nonce/" path) 24)
+                            nonce (derive-random-bytes master-rng (str "enc/nonce/" path "/v/" (:version desc')) 24)
                             env (circle/encrypt-shared-descriptor desc' gk {:nonce-bytes nonce})
-                            store'' (put-descriptor-blob store' env)]
+                            store' (put-descriptor-blob (:blob-store acc) env)]
                         (-> acc
                             (assoc-in [:descriptors path] desc')
                             (assoc-in [:encrypted path] {:envelope env :group-key-bytes gk})
-                            (assoc :blob-store store'')))
+                            (assoc :blob-store store')))
                       (-> acc
                           (assoc-in [:descriptors path] desc')
-                          (assoc :blob-store store'))))))
+                          (update :blob-store put-descriptor-blob desc'))))))
               init-acc
               circle-specs)
         ;; 2. Sovereign <net>/id/<pubkey-cid> descriptors for every Light Node
@@ -675,10 +707,15 @@
          (when-not (:ok? v-res)
            (throw (ex-info "Seat-lease descriptor failed verification"
                            {:path path :error (:error v-res)})))
-         (let [desc' (assoc desc :cid (:cid v-res))]
+         (let [desc' (assoc desc :cid (:cid v-res))
+               gk (derive-random-bytes master-rng (str "enc/group-key/" path) 32)
+               nonce (derive-random-bytes master-rng (str "enc/nonce/" path "/v/" (:version desc')) 24)
+               env (circle/encrypt-shared-descriptor desc' gk {:nonce-bytes nonce})
+               store' (put-descriptor-blob (:blob-store acc) env)]
            (-> acc
                (assoc-in [:descriptors path] desc')
-               (update :blob-store put-descriptor-blob desc')))))
+               (assoc-in [:encrypted path] {:envelope env :group-key-bytes gk})
+               (assoc :blob-store store')))))
      acc2
      larg-builder-archetypes)))
 
@@ -839,13 +876,13 @@
       :home-nodes home-nodes
       :light-nodes light-nodes
       :advisory-twins advisory-twins
-      :advisory-twin-pubkeys advisory-twin-pubkeys
       :state state
       :vault-puzzles puzzles
       :blob-store blob-store
       :encrypted-descriptors encrypted
       :bus (init-network-bus (:bus-fault-policy opts))
       :block-seq 0
+      :market-burned-ech 0
       :diagnostics {}})))
 
 (defn project-light-node-balance
@@ -892,7 +929,7 @@
 (defn- reconcile-state-machine-burns
   "Reconciles `P1` split-brain between `state_machine`'s `:epoch-burns`/`:epoch-settlement-takes`
    and `vault.cljc`'s `:total-burned` without double-counting, immune to `prune-epoch-state`
-   evicting epochs older than the retention window."
+   evicting epochs older than the retention window. Returns `[state' burn-delta]`."
   [st-before st-after]
   (let [pos-delta (fn [m-before m-after]
                     (reduce-kv (fn [acc k v]
@@ -901,15 +938,19 @@
                                (or m-after {})))
         delta (+ (pos-delta (:epoch-burns st-before) (:epoch-burns st-after))
                  (pos-delta (:epoch-settlement-takes st-before) (:epoch-settlement-takes st-after)))]
-    (if (pos? delta)
-      (update st-after :total-burned (fnil + 0) delta)
-      st-after)))
+    [(if (pos? delta)
+       (update st-after :total-burned (fnil + 0) delta)
+       st-after)
+     delta]))
 
 (defn apply-finalized-receipts
   "Applies a batch of finalized receipts through real `bitecho.state-machine/execute-finalized-blocks`:
    - Rejects unknown receipt `:type`s loudly with counted `:diagnose` `:unknown-receipt-type` (INV-7 / P1)
-   - Reconciles `P1` `:epoch-settlement-takes` / `:epoch-burns` into `:total-burned` so 7-bucket
-     conservation holds atomically across persistent vaults AND one-shot task escrows."
+   - Detects any increment in `:failed-receipts-count`, records `:failed-receipts` in `[:diagnostics]`,
+     emits a counted `:diagnose` effect, and returns `:ok? false` (Zero Silent Receipt Failures)
+   - Reconciles `P1` `:epoch-settlement-takes` / `:epoch-burns` into `:total-burned` and tracks
+     `:market-burned-ech` so 7-bucket conservation holds atomically across persistent vaults AND
+     one-shot task escrows."
   [fabric receipts block-epoch]
   (let [ep (long block-epoch)
         known (filterv #(contains? supported-receipt-types (:type %)) receipts)
@@ -929,6 +970,7 @@
        :fabric fab-diag
        :effects unk-effects}
       (let [st (:state fab-diag)
+            failed-before (long (or (:failed-receipts-count st) 0))
             next-seq (inc (long (:block-seq fab-diag 0)))
             parent-hash (or (:latest-finalized-block-hash st) "genesis")
             block-hash (deterministic-cid (str "sim-block|" (:network-genesis-cid fab-diag) "|" next-seq "|" ep "|" (count known)))
@@ -941,15 +983,29 @@
                        (update :finalized-blocks conj block-hash)
                        (assoc :latest-finalized-block-hash block-hash)
                        (state-machine/execute-finalized-blocks))
-            st-exec (reconcile-state-machine-burns st st-raw)]
-        {:ok? (empty? unknown)
-         :fabric (-> fab-diag
-                     (assoc :state st-exec :block-seq next-seq))
-         :effects unk-effects}))))
+            [st-exec burn-delta] (reconcile-state-machine-burns st st-raw)
+            failed-after (long (or (:failed-receipts-count st-exec) 0))
+            failed-delta (max 0 (- failed-after failed-before))
+            all-effects (cond-> unk-effects
+                          (pos? failed-delta)
+                          (conj {:effect :diagnose
+                                 :reason :failed-receipts
+                                 :count failed-delta
+                                 :block-epoch ep}))
+            fab-final (cond-> (-> fab-diag
+                                  (assoc :state st-exec :block-seq next-seq)
+                                  (update :market-burned-ech (fnil + 0) burn-delta))
+                        (pos? failed-delta)
+                        (update-in [:diagnostics :failed-receipts] (fnil + 0) failed-delta))]
+        {:ok? (and (empty? unknown) (zero? failed-delta))
+         :fabric fab-final
+         :failed-receipts-delta failed-delta
+         :effects all-effects}))))
 
 (defn fabric-state-root-cid
   "Computes a deterministic 64-char SHA-256 CID over the canonical fabric state
-   (pubkeys, vaults, ledger balances, escrows, descriptors, encrypted envelopes, bus)."
+   (pubkeys, vaults, ledger balances, escrows, descriptors, encrypted envelopes, mint/burn,
+   failed-receipts-count, advisory-twin-pubkeys, and bus)."
   [fabric]
   (let [st (:state fabric)
         summary {:network-uri (:network-uri fabric)
@@ -957,12 +1013,18 @@
                  :infra-pks (into (sorted-map) (map (fn [[k v]] [(name k) (:pubkey-hex v)]) (:infra-nodes fabric)))
                  :home-pks (into (sorted-map) (map (fn [[k v]] [(name k) (:pubkey-hex v)]) (:home-nodes fabric)))
                  :light-pks (into (sorted-map) (map (fn [[k v]] [(name k) (:pubkey-hex v)]) (:light-nodes fabric)))
-                 :advisory-twins (vec (sort (:advisory-twin-pubkeys fabric)))
+                 :advisory-twin-pubkeys (vec (sort (or (:advisory-twin-pubkeys st) #{})))
                  :ledger (into (sorted-map) (map (fn [[pk a]] [pk (long (or (:balance a) 0))]) (:ledger st)))
                  :vaults (into (sorted-map) (map (fn [[vid v]] [vid (select-keys v [:balance :vault-seq :puzzle-hash :status :custody-bucket])]) (:vaults st)))
                  :escrows (into (sorted-map) (map (fn [[eid e]] [eid (select-keys e [:amount :status :payer :receiver])]) (:escrows st)))
+                 :entity-descriptors (into (sorted-map)
+                                           (map (fn [[p d]]
+                                                  [p (select-keys d [:cid :status :vault-id :entity-kind :visibility :version])]))
+                                           (or (:entity-descriptors st) {}))
                  :total-burned (long (or (:total-burned st) 0))
+                 :total-minted (long (or (:total-minted st) 0))
                  :sunset-custody-burned (long (or (:sunset-custody-burned st) 0))
+                 :failed-receipts-count (long (or (:failed-receipts-count st) 0))
                  :encrypted-cids (into (sorted-map) (map (fn [[p e]] [p (select-keys (:envelope e) [:nonce-hex :ciphertext-hex :blinded-path])])
                                                          (:encrypted-descriptors fabric)))
                  :bus-seq (long (get-in fabric [:bus :seq] 0))}]

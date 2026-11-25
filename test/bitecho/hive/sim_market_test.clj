@@ -136,13 +136,21 @@
                                   fab0 (:market clear-res) (:cleared clear-res)
                                   {:epoch 1 :escrow-ttl-epochs 5 :subnet-fee-bps subnet-fee-bps})
                       fab1 (:fabric settle-res)
+                      mkt1 (:market settle-res)
                       cons1 (fabric/verify-fabric-conservation fab1)
-                      buyer-after (get-in fab1 [:state :ledger buyer-pk :balance])
-                      prov-after (get-in fab1 [:state :ledger prov-pk :balance])
-                      treas-after (get-in fab1 [:state :ledger sub-treasury-pk :balance])
-                      burn-after (get-in fab1 [:state :total-burned])
+                      ;; For timeout path, settle matured pending refunds at real block-epoch = (+ 0 5 2) = 7
+                      ref-res (when-not deliver?
+                                (market/settle-pending-refunds fab1 mkt1 7))
+                      fab-final (if deliver? fab1 (:fabric ref-res))
+                      cons-final (fabric/verify-fabric-conservation fab-final)
+                      buyer-after (get-in fab-final [:state :ledger buyer-pk :balance])
+                      prov-after (get-in fab-final [:state :ledger prov-pk :balance])
+                      treas-after (get-in fab-final [:state :ledger sub-treasury-pk :balance])
+                      burn-after (get-in fab-final [:state :total-burned])
                       gross (* unit-price units)]
                   (and (:ok? cons1)
+                       (:ok? cons-final)
+                       (= 0 (get-in fab-final [:state :failed-receipts-count] 0))
                        (if deliver?
                          (let [buyer-debit (- buyer-before buyer-after)
                                prov-credit (- prov-after prov-before)
@@ -151,11 +159,13 @@
                            (and (= gross buyer-debit)
                                 (pos? proto-burn)
                                 (= buyer-debit (+ prov-credit proto-burn treas-credit))))
-                         (and (= buyer-before buyer-after)
+                         (and (= 1 (:pending-timeouts settle-res))
+                              (= 0 (:timeout-refunds settle-res))
+                              (= 1 (:timeout-refunds ref-res))
+                              (= buyer-before buyer-after)
                               (= prov-before prov-after)
                               (= treas-before treas-after)
-                              (= burn-before burn-after)
-                              (= 1 (:timeout-refunds settle-res))))))))
+                              (= burn-before burn-after)))))))
 
 ;; =============================================================================
 ;; Adversarial Market Scenarios: Sybil Provider SLA Decay & Subnet Halt Diversion
@@ -219,7 +229,7 @@
                              (if (> ep 15) (+ late-sybil s-cnt) late-sybil)))))
           sybil-sla (get-in final [:mkt :offers "offer-sybil" :attested-sla-bps])
           honest-sla (get-in final [:mkt :offers "offer-honest" :attested-sla-bps])]
-      (is (< sybil-sla 8500) (str "Expected Sybil attested SLA to decay below 8500, got " sybil-sla))
+      (is (< sybil-sla 8800) (str "Expected Sybil attested SLA to decay below 8800, got " sybil-sla))
       (is (>= honest-sla 9500) (str "Expected honest attested SLA >= 9500, got " honest-sla))
       (is (> (:late-honest final) (:late-sybil final)))
       (is (:ok? (fabric/verify-fabric-conservation (:fab final)))))))
@@ -281,3 +291,94 @@
       (is (:ok? rep))
       (is (>= (get-in (:fabric rep) [:state :ledger buyer-pk :balance] 0) 9900))
       (is (:ok? (fabric/verify-fabric-conservation (:fabric rep)))))))
+
+;; =============================================================================
+;; V2 Falsifiers: Cross-Subnet CRN Isolation, Self-Trade Rejection & Bayesian SLA
+;; =============================================================================
+
+(deftest cross-subnet-crn-isolation-falsifier-test
+  (testing "V3: Adding an earlier-sorting order on an unrelated subnet leaves target subnet delivery bit-identical"
+    (let [fab0 (fabric/init-fabric {:seed 1337})
+          p-target-pk (get-in fab0 [:light-nodes :builder-larg-1 :pubkey-hex])
+          p-other-pk (get-in fab0 [:light-nodes :builder-larg-2 :pubkey-hex])
+          b-target-pk (get-in fab0 [:light-nodes :builder-larg-3 :pubkey-hex])
+          b-other-pk (get-in fab0 [:light-nodes :partner-larg-tac :pubkey-hex])
+          ;; Ensure both buyers are funded
+          fab-funded (assoc-in fab0 [:state :ledger b-other-pk :balance] 100000)
+          m0 (-> (market/init-market-state {:seed 1337})
+                 (market/register-offer {:offer-id "offer-target"
+                                         :capability-type :llm-inference
+                                         :unit-price-ech 200
+                                         :marginal-cost-ech 80
+                                         :capacity-units-per-epoch 10
+                                         :provider-id :builder-larg-1
+                                         :provider-pubkey p-target-pk
+                                         :subnet-id "root/markets/zzz-target"
+                                         :attested-sla-bps 9500
+                                         :true-delivery-prob 0.50})
+                 (market/register-offer {:offer-id "offer-earlier"
+                                         :capability-type :tac-auction-agent
+                                         :unit-price-ech 150
+                                         :marginal-cost-ech 60
+                                         :capacity-units-per-epoch 10
+                                         :provider-id :builder-larg-2
+                                         :provider-pubkey p-other-pk
+                                         :subnet-id "root/markets/aaa-unrelated"
+                                         :attested-sla-bps 9500
+                                         :true-delivery-prob 0.50}))
+          ;; Test across 20 epochs so 50% Bernoulli draws would certainly diverge if keyed by global batch index!
+          outcomes-solo
+          (mapv (fn [ep]
+                  (let [req-target {:request-id (str "t-" ep) :request-seq 2 :epoch ep
+                                    :buyer-id :builder-larg-3 :buyer-pubkey b-target-pk
+                                    :capability-type :llm-inference :units 1
+                                    :max-wtp-ech 300 :min-sla-bps 8000 :budget-ech 300}
+                        cl (market/clear-market-epoch m0 [req-target] {:epoch ep})
+                        st (market/settle-cleared-batches fab-funded (:market cl) (:cleared cl) {:epoch ep :escrow-ttl-epochs 2})]
+                    (= 1 (:settled-batches st))))
+                (range 1 21))
+          outcomes-with-earlier
+          (mapv (fn [ep]
+                  (let [req-other {:request-id (str "a-" ep) :request-seq 1 :epoch ep
+                                   :buyer-id :partner-larg-tac :buyer-pubkey b-other-pk
+                                   :capability-type :tac-auction-agent :units 1
+                                   :max-wtp-ech 300 :min-sla-bps 8000 :budget-ech 300}
+                        req-target {:request-id (str "t-" ep) :request-seq 2 :epoch ep
+                                    :buyer-id :builder-larg-3 :buyer-pubkey b-target-pk
+                                    :capability-type :llm-inference :units 1
+                                    :max-wtp-ech 300 :min-sla-bps 8000 :budget-ech 300}
+                        cl (market/clear-market-epoch m0 [req-other req-target] {:epoch ep})
+                        st (market/settle-cleared-batches fab-funded (:market cl) (:cleared cl) {:epoch ep :escrow-ttl-epochs 2})]
+                    (pos? (get-in st [:market :per-subnet-released "root/markets/zzz-target"] 0))))
+                (range 1 21))]
+      (is (= outcomes-solo outcomes-with-earlier)
+          "Adding an earlier-sorting unrelated subnet order must NEVER perturb target subnet delivery draws"))))
+
+(deftest self-trade-forbidden-and-bayesian-sla-no-death-spiral-test
+  (testing "clear-market-epoch forbids self-trades (buyer == provider) so lock-intent never fails"
+    (let [fab (fabric/init-fabric {:seed 55})
+          pk (get-in fab [:light-nodes :builder-larg-1 :pubkey-hex])
+          m0 (-> (market/init-market-state {:seed 55})
+                 (market/register-offer {:offer-id "offer-self"
+                                         :capability-type :llm-inference
+                                         :unit-price-ech 100
+                                         :marginal-cost-ech 50
+                                         :capacity-units-per-epoch 5
+                                         :provider-id :builder-larg-1
+                                         :provider-pubkey pk
+                                         :subnet-id "root/markets/larg-tac"}))
+          req {:request-id "req-self" :request-seq 1 :epoch 1
+               :buyer-id :builder-larg-1 :buyer-pubkey pk
+               :capability-type :llm-inference :units 1
+               :max-wtp-ech 200 :min-sla-bps 8000 :budget-ech 200}
+          cl (market/clear-market-epoch m0 [req] {:epoch 1})]
+      (is (empty? (:cleared cl)))
+      (is (= 1 (count (:uncleared cl))))))
+
+  (testing "Bayesian/Beta SLA estimator: single timeout on honest provider stays > 8800 bps (9500 -> 9048), while 4 timeouts on Sybil drop < 8800 bps"
+    (let [base-offer {:sla-prior-alpha 19 :sla-prior-beta 1 :attested-sla-bps 9500 :total-released 0 :total-refunded 0}
+          after-1-timeout (market/update-attested-sla base-offer false)
+          after-4-timeouts (nth (iterate #(market/update-attested-sla % false) base-offer) 4)]
+      (is (= 9048 (:attested-sla-bps after-1-timeout)))
+      (is (> (:attested-sla-bps after-1-timeout) 8800))
+      (is (< (:attested-sla-bps after-4-timeouts) 8800)))))

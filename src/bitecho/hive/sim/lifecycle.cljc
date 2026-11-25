@@ -119,13 +119,15 @@
 ;; =============================================================================
 
 (defn charter-commercial-subnet
-  "Atomically charters a commercial subnet via real `subnet/init-subnet-instance` +
-   verified `circle/create-entity-descriptor` and populates it with a real Ed25519 Light Node
-   provider + capability offer."
-  [fabric market {:keys [subnet-id epoch capability-types provider-node-id]}]
+  "Atomically charters a commercial subnet via real `subnet/init-subnet-instance` (with
+   `:subnet/parent-id \"bitecho.org/infra\"`) + verified `circle/create-entity-descriptor`
+   (with dedicated `:vault-id`), populates it with a real Ed25519 Light Node provider +
+   dedicated subnet treasury + capability offers."
+  [fabric market {:keys [subnet-id epoch capability-types provider-node-id unit-mult]}]
   (let [master-rng (:master-rng fabric)
         net-uri (:network-uri fabric)
         gen-cid (:network-genesis-cid fabric)
+        u-mult (max 1 (long (or unit-mult 1)))
         simon (get-in fabric [:light-nodes :founder-simon])
         axiom (get-in fabric [:light-nodes :agent-axiom])
         nexus (get-in fabric [:light-nodes :agent-nexus])
@@ -154,7 +156,7 @@
                                   :affiliation "Organic Entrant" :external-archetype? true
                                   :opt-in? false :endorsed? false :synthetic-archetype? true}}]
             [(assoc-in fabric [:light-nodes p-id] node) node]))
-        ;; Build & verify entity descriptor if not already present
+        ;; Build & verify entity descriptor with its own dedicated :vault-id (never sharing ecosystem-faucet)
         fab2 (if (contains? (get-in fab1 [:state :entity-descriptors]) subnet-id)
                fab1
                (let [desc (circle/create-entity-descriptor
@@ -167,7 +169,7 @@
                             :owner-multisig {:threshold 2 :pubkeys founding-pks}
                             :purpose-cid (fabric/deterministic-cid (str "purpose|" subnet-id))
                             :consent-round-cid (fabric/deterministic-cid (str "consent|" subnet-id "|" epoch))
-                            :vault-id "vault:root/ecosystem-faucet"
+                            :vault-id (str "vault:" subnet-id)
                             :custody-bucket :ecosystem
                             :allocation-ech 0
                             :retention-policy fabric/default-retention-policy
@@ -182,13 +184,14 @@
                             desc
                             {:network-uri net-uri
                              :network-genesis-cid gen-cid
-                             :advisory-twin-pubkeys (:advisory-twin-pubkeys fab1)})]
+                             :advisory-twin-pubkeys (get-in fab1 [:state :advisory-twin-pubkeys])})]
                  (if (:ok? v-res)
                    (assoc-in fab1 [:state :entity-descriptors subnet-id] (assoc desc :cid (:cid v-res)))
                    (update-in fab1 [:diagnostics :commercial-subnet-descriptor-rejected] (fnil inc 0)))))
-        ;; Instantiate real bitecho.core.subnet instance
+        ;; Instantiate real bitecho.core.subnet instance anchored to bitecho.org/infra
         anchors (set (conj (map :pubkey-hex (vals (:infra-nodes fab2))) (:pubkey-hex prov-node)))
         base-pol {:subnet/id subnet-id
+                  :subnet/parent-id "bitecho.org/infra"
                   :subnet/gate {:gate/mode :permissioned
                                 :gate/admission :allowlist
                                 :gate/trust-anchors anchors}
@@ -197,15 +200,23 @@
                   :subnet/replication {:replication/pointers :streamlet-bft
                                        :replication/blobs :eager-push}}
         pol (assoc base-pol :subnet/genesis-policy-cid (subnet/policy-cid base-pol))
-        sub-inst (:instance (subnet/init-subnet-instance pol {:node-id (:pubkey-hex prov-node)
-                                                              :all-nodes anchors}))
-        fab3 (assoc-in fab2 [:commercial-subnets subnet-id]
-                       {:subnet-id subnet-id
-                        :provider-id p-id
-                        :provider-pubkey (:pubkey-hex prov-node)
-                        :subnet-instance sub-inst
-                        :chartered-epoch (long (or epoch 0))
-                        :status :active})
+        sub-res (subnet/init-subnet-instance pol {:node-id (:pubkey-hex prov-node)
+                                                  :all-nodes anchors})
+        sub-inst (:instance sub-res)
+        fab3 (cond-> (assoc-in fab2 [:commercial-subnets subnet-id]
+                               {:subnet-id subnet-id
+                                :provider-id p-id
+                                :provider-pubkey (:pubkey-hex prov-node)
+                                :subnet-instance sub-inst
+                                :chartered-epoch (long (or epoch 0))
+                                :status :active})
+               (not (:ok? sub-res))
+               (update-in [:diagnostics :commercial-subnet-init-failed] (fnil inc 0)))
+        ;; Ensure this commercial subnet has a dedicated treasury pubkey (distinct from provider)
+        mkt-treas (if (contains? (:subnet-treasuries market) subnet-id)
+                    market
+                    (let [t-kp (fabric/derive-keypair master-rng (str "commercial/" subnet-id "/treasury/keygen"))]
+                      (assoc-in market [:subnet-treasuries subnet-id] (:pubkey-hex t-kp))))
         ;; Register capability offers on the market
         mkt' (reduce (fn [m ctype]
                        (let [cat (get market/capability-catalog ctype {:ref-price-ech 150 :marginal-cost-ech 60})]
@@ -214,15 +225,15 @@
                                                  :capability-type ctype
                                                  :unit-price-ech (:ref-price-ech cat)
                                                  :marginal-cost-ech (:marginal-cost-ech cat)
-                                                 :capacity-units-per-epoch 12
+                                                 :capacity-units-per-epoch (* u-mult 8)
                                                  :provider-id p-id
                                                  :provider-pubkey (:pubkey-hex prov-node)
                                                  :subnet-id subnet-id
-                                                 :attested-sla-bps 9600
-                                                 :true-delivery-prob 0.98})))
-                     market
+                                                 :attested-sla-bps 9500
+                                                 :true-delivery-prob 0.99})))
+                     mkt-treas
                      (or capability-types [:llm-inference :tac-auction-agent]))]
-    {:ok? true
+    {:ok? (true? (:ok? sub-res))
      :fabric fab3
      :market mkt'
      :subnet-id subnet-id
@@ -230,41 +241,62 @@
 
 (defn dissolve-commercial-circle
   "Cleanly dissolves a commercial circle/subcircle via `fabric/dissolve-circle-safe`:
+   - Guards EVERY path in `seat-lease-paths` with `circle/can-org-revoke-entity?` (rejecting
+     revocation of sovereign `id/<pk-cid>` or unauthorized targets with counted `:diagnose`!)
    - Returns unspent circle/child vault principal to `parent-vault-id` at 0-take preserving `:custody-bucket`
-   - Marks all `:seat-lease` descriptors in `seat-lease-paths` as `:revoked`
+   - Marks valid `:seat-lease` descriptors in `seat-lease-paths` as `:revoked`
    - Leaves LARG builders' earned sovereign market revenue in `[:ledger pk]` 100% untouched (INV-8)."
   [fabric {:keys [circle-path seat-lease-paths child-vault-id parent-vault-id]}]
   (let [st (:state fabric)
-        simon-pk (get-in fabric [:light-nodes :founder-simon :pubkey-hex])
-        axiom-pk (get-in fabric [:light-nodes :agent-axiom :pubkey-hex])
-        ;; Ensure the dissolving descriptor points to child-vault-id if explicitly provided
-        st0 (if (and child-vault-id (get-in st [:entity-descriptors circle-path]))
-              (assoc-in st [:entity-descriptors circle-path :vault-id] child-vault-id)
-              st)
-        round {:lead-link-pubkey simon-pk
-               :quorum-size 2
-               :ballots {simon-pk :consent
-                         axiom-pk :consent}}
-        ctx {:advisory-twin-pubkeys (:advisory-twin-pubkeys fabric)}
-        res (fabric/dissolve-circle-safe st0
-                                         {:circle-path circle-path
-                                          :parent-vault-id parent-vault-id
-                                          :consent-round round}
-                                         ctx)]
-    (if-not (:ok? res)
-      {:ok? false
-       :error (:error res)
-       :fabric (assoc fabric :state (:state res))
-       :effects (:effects res)}
-      (let [st-revoked (reduce (fn [s p]
-                                 (if (contains? (:entity-descriptors s) p)
-                                   (assoc-in s [:entity-descriptors p :status] :revoked)
-                                   s))
-                               (:state res)
-                               (or seat-lease-paths []))]
-        {:ok? true
-         :fabric (assoc fabric :state st-revoked)
-         :effects (:effects res)}))))
+        org-desc (get-in st [:entity-descriptors circle-path])
+        ;; Pre-check every requested revocation against circle/can-org-revoke-entity? (INV-C4)
+        rev-check (some (fn [p]
+                          (let [target-desc (get-in st [:entity-descriptors p])]
+                            (when target-desc
+                              (let [r (circle/can-org-revoke-entity? org-desc target-desc)]
+                                (when-not (:ok? r)
+                                  {:path p :result r})))))
+                        (or seat-lease-paths []))]
+    (if rev-check
+      (let [err (or (get-in rev-check [:result :error]) :unauthorized-org-revocation)
+            diag {:effect :diagnose
+                  :reason err
+                  :circle-path circle-path
+                  :target-path (:path rev-check)}]
+        {:ok? false
+         :error err
+         :fabric (update-in fabric [:diagnostics err] (fnil inc 0))
+         :effects [diag]})
+      (let [simon-pk (get-in fabric [:light-nodes :founder-simon :pubkey-hex])
+            axiom-pk (get-in fabric [:light-nodes :agent-axiom :pubkey-hex])
+            ;; Ensure the dissolving descriptor points to child-vault-id if explicitly provided
+            st0 (if (and child-vault-id (get-in st [:entity-descriptors circle-path]))
+                  (assoc-in st [:entity-descriptors circle-path :vault-id] child-vault-id)
+                  st)
+            round {:lead-link-pubkey simon-pk
+                   :quorum-size 2
+                   :ballots {simon-pk :consent
+                             axiom-pk :consent}}
+            ctx {:advisory-twin-pubkeys (get-in fabric [:state :advisory-twin-pubkeys])}
+            res (fabric/dissolve-circle-safe st0
+                                             {:circle-path circle-path
+                                              :parent-vault-id parent-vault-id
+                                              :consent-round round}
+                                             ctx)]
+        (if-not (:ok? res)
+          {:ok? false
+           :error (:error res)
+           :fabric (assoc fabric :state (:state res))
+           :effects (:effects res)}
+          (let [st-revoked (reduce (fn [s p]
+                                     (if (contains? (:entity-descriptors s) p)
+                                       (assoc-in s [:entity-descriptors p :status] :revoked)
+                                       s))
+                                   (:state res)
+                                   (or seat-lease-paths []))]
+            {:ok? true
+             :fabric (assoc fabric :state st-revoked)
+             :effects (:effects res)}))))))
 
 ;; =============================================================================
 ;; 4. Fabric & Market Initialization for Dual-Track Lifecycle
@@ -283,6 +315,7 @@
         home-pks (mapv :pubkey-hex (vals (:home-nodes fab0)))
         sunset-ep (:bootstrap-sunset-epoch scaled-cfg)
         trailing-ep (:treasury-trailing-epochs scaled-cfg)
+        lead-ep (:validator-activation-lead-epochs scaled-cfg)
         p-cliff (:partner-cliff-epochs scaled-cfg)
         p-vest (:partner-vest-epochs scaled-cfg)
         ;; 1. Issue Ecosystem Faucet DAC for closed-loop buyer liquidity
@@ -295,6 +328,7 @@
                             :mesh-nodes home-pks)
                      (assoc-in [:config :treasury-trailing-epochs] trailing-ep)
                      (assoc-in [:config :bootstrap-sunset-epoch] sunset-ep)
+                     (assoc-in [:config :validator-activation-lead-epochs] lead-ep)
                      (assoc-in [:config :treasury-pubkey] oracle-pk)
                      (assoc-in [:config :treasury-privkey] oracle-priv)
                      (assoc-in [:config :validators] validator-pks)
@@ -304,7 +338,7 @@
                   :holder-pubkey simon-pk
                   :max-per-epoch-bps 500
                   :issued-epoch 0
-                  :expires-epoch (+ sunset-ep 1000)})
+                  :expires-epoch (+ sunset-ep 20000)})
         st1 (:state dac-res)
         ;; 2. Rebuild each of the 7 Genesis Partner SLA sub-vault puzzles with scaled cliff & vest
         [st2 puzzles2]
@@ -326,11 +360,18 @@
          partner-subnet-map)]
     (assoc fab0 :state st2 :vault-puzzles puzzles2)))
 
+(defn- demand-unit-multiplier
+  "Scales order batch size and offer capacity cleanly with time-compression factor `C`
+   so compressed epochs represent realistic multi-hour GMV and protocol burns."
+  [scaled-cfg]
+  (max 1 (quot (long (or (:time-compression-factor scaled-cfg) 1)) 6)))
+
 (defn- init-dual-track-market
   "Registers redundant capability offers across the 4 base commercial subnets + any extra
    commercial subnets so halting any one commercial subnet diverts traffic cleanly."
   [fab scaled-cfg opts]
   (let [seed (:seed fab)
+        u-mult (demand-unit-multiplier scaled-cfg)
         sub-treasuries {"root/markets/larg-tac"      (get-in fab [:light-nodes :partner-larg-tac :pubkey-hex])
                         "root/markets/midi-sim"      (get-in fab [:light-nodes :partner-midi-sim :pubkey-hex])
                         "root/markets/clear-games"   (get-in fab [:light-nodes :partner-clear-games :pubkey-hex])
@@ -342,31 +383,31 @@
                                       :subnet-treasuries sub-treasuries})
         base-offers
         [{:offer-id "offer-larg-tac-agent" :capability-type :tac-auction-agent :unit-price-ech 150 :marginal-cost-ech 60
-          :capacity-units-per-epoch 12 :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
+          :capacity-units-per-epoch (* u-mult 7) :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
          {:offer-id "offer-larg-llm" :capability-type :llm-inference :unit-price-ech 190 :marginal-cost-ech 80
-          :capacity-units-per-epoch 12 :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
+          :capacity-units-per-epoch (* u-mult 7) :provider-id :builder-larg-1 :subnet-id "root/markets/larg-tac"}
          {:offer-id "offer-larg-storage" :capability-type :artifact-storage :unit-price-ech 60 :marginal-cost-ech 20
-          :capacity-units-per-epoch 14 :provider-id :partner-larg-tac :subnet-id "root/markets/larg-tac"}
+          :capacity-units-per-epoch (* u-mult 8) :provider-id :partner-larg-tac :subnet-id "root/markets/larg-tac"}
          ;; Sibling commercial subnets offering redundant capabilities for INV-5 diversion
          {:offer-id "offer-midi-llm" :capability-type :llm-inference :unit-price-ech 200 :marginal-cost-ech 80
-          :capacity-units-per-epoch 14 :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
+          :capacity-units-per-epoch (* u-mult 8) :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
          {:offer-id "offer-midi-tac" :capability-type :tac-auction-agent :unit-price-ech 160 :marginal-cost-ech 60
-          :capacity-units-per-epoch 12 :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
+          :capacity-units-per-epoch (* u-mult 8) :provider-id :builder-larg-2 :subnet-id "root/markets/midi-sim"}
          {:offer-id "offer-midi-tts" :capability-type :tts-kokoro :unit-price-ech 80 :marginal-cost-ech 30
-          :capacity-units-per-epoch 12 :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
+          :capacity-units-per-epoch (* u-mult 6) :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
          {:offer-id "offer-midi-stt" :capability-type :stt-moonshine :unit-price-ech 90 :marginal-cost-ech 35
-          :capacity-units-per-epoch 12 :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
+          :capacity-units-per-epoch (* u-mult 6) :provider-id :partner-midi-sim :subnet-id "root/markets/midi-sim"}
          {:offer-id "offer-clear-game" :capability-type :inverse-game-eval :unit-price-ech 320 :marginal-cost-ech 120
-          :capacity-units-per-epoch 10 :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
+          :capacity-units-per-epoch (* u-mult 6) :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
          {:offer-id "offer-clear-tac" :capability-type :tac-auction-agent :unit-price-ech 165 :marginal-cost-ech 60
-          :capacity-units-per-epoch 10 :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
+          :capacity-units-per-epoch (* u-mult 7) :provider-id :builder-larg-3 :subnet-id "root/markets/clear-games"}
          {:offer-id "offer-trustx-verify" :capability-type :formal-verify :unit-price-ech 400 :marginal-cost-ech 160
-          :capacity-units-per-epoch 10 :provider-id :partner-trustx-verify :subnet-id "root/markets/trustx-verify"}
+          :capacity-units-per-epoch (* u-mult 6) :provider-id :partner-trustx-verify :subnet-id "root/markets/trustx-verify"}
          {:offer-id "offer-trustx-storage" :capability-type :artifact-storage :unit-price-ech 65 :marginal-cost-ech 20
-          :capacity-units-per-epoch 12 :provider-id :builder-larg-1 :subnet-id "root/markets/trustx-verify"}]
+          :capacity-units-per-epoch (* u-mult 8) :provider-id :builder-larg-1 :subnet-id "root/markets/trustx-verify"}]
         m1 (reduce (fn [m o]
                      (let [pk (get-in fab [:light-nodes (:provider-id o) :pubkey-hex])]
-                       (market/register-offer m (assoc o :provider-pubkey pk :attested-sla-bps 9700 :true-delivery-prob 0.99))))
+                       (market/register-offer m (assoc o :provider-pubkey pk :attested-sla-bps 9500 :true-delivery-prob 0.99))))
                    m0
                    base-offers)
         ;; Inject Sybil provider in :sybil-provider-attack scenario
@@ -377,64 +418,137 @@
                :capability-type :formal-verify
                :unit-price-ech 350
                :marginal-cost-ech 160
-               :capacity-units-per-epoch 10
+               :capacity-units-per-epoch (* u-mult 6)
                :provider-id :partner-neuroevo
                :provider-pubkey (get-in fab [:light-nodes :partner-neuroevo :pubkey-hex])
                :subnet-id "root/markets/trustx-verify"
                :claimed-sla-bps 9999
-               :attested-sla-bps 9600
+               :attested-sla-bps 9500
                :true-delivery-prob 0.50})
              m1)
         ;; Charter base commercial subnet instances
         fab1 (reduce (fn [f sid]
-                       (:fabric (charter-commercial-subnet f m2 {:subnet-id sid :epoch 0 :capability-types []})))
+                       (:fabric (charter-commercial-subnet f m2 {:subnet-id sid :epoch 0 :capability-types [] :unit-mult u-mult})))
                      fab
                      base-commercial-subnets)
         ;; Charter any extra commercial subnets (testing cross-subnet PRNG isolation)
         [fab2 m3]
         (reduce (fn [[f m] sid]
-                  (let [ch (charter-commercial-subnet f m {:subnet-id sid :epoch 0 :capability-types [:llm-inference :tac-auction-agent]})]
+                  (let [ch (charter-commercial-subnet f m {:subnet-id sid :epoch 0 :capability-types [:llm-inference :tac-auction-agent] :unit-mult u-mult})]
                     [(:fabric ch) (:market ch)]))
                 [fab1 m2]
                 (or (:extra-commercial-subnets opts) []))]
     {:fabric fab2 :market m3 :scaled-cfg scaled-cfg}))
 
 ;; =============================================================================
-;; 5. Per-Epoch Protocol Infra, Demand Generation & SLA Partner Vesting
+;; 5. Per-Epoch Protocol Infra, NetworkBus, Demand, Treasury & SLA Partner Vesting
 ;; =============================================================================
 
 (defn- step-protocol-infra-epoch
   "Executes protocol subnet (`bitecho.org/infra`) epoch logic using an isolated PRNG stream
-   that NEVER depends on commercial subnet count or activity (INV-3)."
-  [master-rng ep scaled-cfg infra-stats]
-  (let [infra-rng (crypto/fork-random master-rng (str "protocol/bitecho.org/infra/ep/" ep))
+   that NEVER depends on commercial subnet count or activity (INV-3):
+   - Runs real `rolling-upgrade-sim/run-trial` with `:committee-size 6` on upgrade epochs
+   - Creates, verifies, and applies a real `:root/validator-set-descriptor` via `:rotate-validator-set`
+     on rotation epochs."
+  [fab ep scaled-cfg infra-stats]
+  (let [infra-rng (crypto/fork-random (:master-rng fab) (str "protocol/bitecho.org/infra/ep/" ep))
         draw (crypto/next-int infra-rng 1000000)
         upgrade-int (max 1 (long (:upgrade-interval-epochs scaled-cfg)))
         rot-int (max 1 (long (:rotation-interval-epochs scaled-cfg)))
         do-upgrade? (zero? (mod ep upgrade-int))
         do-rotation? (zero? (mod ep rot-int))
-        ;; Reuse rolling-upgrade-sim full-quorum-guard logic when an upgrade fires
+        ;; Reuse rolling-upgrade-sim full-quorum-guard logic with real :committee-size 6
         up-res (when do-upgrade?
                  (rolling-upgrade/run-trial
                   {:policy :post-rotation-full-quorum-guard
-                   :n-validators 6
+                   :committee-size 6
                    :seed (+ 100000 draw)
                    :restart-mode :realistic}))
-        stalled? (boolean (and up-res (not (:zero-stall? up-res))))]
-    (-> infra-stats
-        (update :infra-draws conj draw)
-        (update :upgrades-executed + (if do-upgrade? 1 0))
-        (update :upgrade-stalls + (if stalled? 1 0))
-        (update :rotations-executed + (if do-rotation? 1 0)))))
+        stalled? (boolean (and up-res (not (:zero-stall? up-res))))
+        ;; On rotation epochs, execute real create-validator-set-descriptor + verify + :rotate-validator-set
+        [fab-rot rot-ok?]
+        (if-not do-rotation?
+          [fab false]
+          (let [simon (get-in fab [:light-nodes :founder-simon])
+                axiom (get-in fab [:light-nodes :agent-axiom])
+                nexus (get-in fab [:light-nodes :agent-nexus])
+                founding-signers [{:pubkey (:pubkey-hex simon) :privkey (get-in simon [:keypair :private])}
+                                  {:pubkey (:pubkey-hex axiom) :privkey (get-in axiom [:keypair :private])}
+                                  {:pubkey (:pubkey-hex nexus) :privkey (get-in nexus [:keypair :private])}]
+                validator-pks (mapv :pubkey-hex (vals (:infra-nodes fab)))
+                lead (long (:validator-activation-lead-epochs scaled-cfg))
+                rot-ver (inc (long (:rotations-executed infra-stats 0)))
+                v-desc (circle/create-validator-set-descriptor
+                        {:network-uri (:network-uri fab)
+                         :network-genesis-cid (:network-genesis-cid fab)
+                         :version rot-ver
+                         :epoch-finalized ep
+                         :not-before-epoch ep
+                         :epoch-effective (+ ep lead)
+                         :quorum-threshold 5
+                         :consent-round-cid (fabric/deterministic-cid (str "val-rot|" (:network-genesis-cid fab) "|" ep))
+                         :committee (mapv (fn [pk] {:pubkey pk :role :core-validator}) validator-pks)
+                         :policy-refs {:theta-version "v2.1" :validator-activation-lead-epochs lead}
+                         :retention-policy fabric/default-retention-policy
+                         :storage-accounting {:bytes-at-rest 512
+                                              :cache-incentive :free-self-hosted
+                                              :payer-pubkey (:pubkey-hex simon)
+                                              :fee-ech 0}}
+                        founding-signers)
+                v-check (circle/verify-validator-set-descriptor
+                         v-desc
+                         {:root-owner-multisig (get-in fab [:state :root-owner-multisig])
+                          :network-uri (:network-uri fab)
+                          :network-genesis-cid (:network-genesis-cid fab)
+                          :advisory-twin-pubkeys (get-in fab [:state :advisory-twin-pubkeys])
+                          :lead-epochs lead})]
+            (if (:ok? v-check)
+              (let [rot-res (fabric/apply-finalized-receipts
+                             fab
+                             [{:receipt-id (str "rcpt-rot-ep" ep "-v" rot-ver)
+                               :type :rotate-validator-set
+                               :descriptor v-desc
+                               :epoch (max 0 (dec ep))}]
+                             ep)]
+                [(:fabric rot-res) (true? (:ok? rot-res))])
+              [(update-in fab [:diagnostics :validator-rotation-rejected] (fnil inc 0)) false])))]
+    {:fabric fab-rot
+     :infra-stats (-> infra-stats
+                      (update :infra-draws conj draw)
+                      (update :upgrades-executed + (if do-upgrade? 1 0))
+                      (update :upgrade-stalls + (if stalled? 1 0))
+                      (update :rotations-executed + (if do-rotation? 1 0))
+                      (update :rotations-verified + (if rot-ok? 1 0)))}))
+
+(defn- step-network-bus-epoch
+  "Routes a real signed Light-Node gossip envelope through `fabric/bus-send` and
+   `fabric/bus-deliver-epoch` each epoch using an isolated bus PRNG stream."
+  [fab ep]
+  (let [sender-node (get-in fab [:light-nodes :builder-larg-1])
+        bus-rng (crypto/fork-random (:master-rng fab) (str "bus/ep/" ep))
+        gossip-env (light-node/build-gossip-envelope
+                    (:pubkey-hex sender-node)
+                    (get-in sender-node [:keypair :private])
+                    (fressian/utf8->bytes (str "epoch-heartbeat:" ep))
+                    10
+                    "root/markets/larg-tac")
+        send-res (fabric/bus-send (:bus fab) bus-rng {:from :builder-larg-1
+                                                      :to :infra-ns1
+                                                      :subnet-id "root/markets/larg-tac"
+                                                      :envelope gossip-env
+                                                      :epoch ep})
+        del-res (fabric/bus-deliver-epoch (:bus send-res) ep)]
+    (assoc fab :bus (:bus del-res))))
 
 (defn- generate-epoch-demand
   "Generates deterministic capability market requests for epoch `ep` using isolated
-   per-epoch demand PRNG streams."
+   per-epoch demand PRNG streams, scaled cleanly with time-compression factor `C`."
   [fab scenario ep scaled-cfg]
   (let [sunset-ep (long (:bootstrap-sunset-epoch scaled-cfg))
         post-sunset? (>= ep sunset-ep)
+        u-mult (demand-unit-multiplier scaled-cfg)
         base-orders (case scenario
-                      :high-velocity-commercial 12
+                      :high-velocity-commercial 18
                       :bear-post-sunset-cliff (if post-sunset? 3 7)
                       :sybil-provider-attack 8
                       7)
@@ -445,7 +559,7 @@
                            buyer-id (nth buyers (crypto/next-int rng (count buyers)))
                            buyer-pk (get-in fab [:light-nodes buyer-id :pubkey-hex])
                            ref-p (get-in market/capability-catalog [ctype :ref-price-ech] 150)
-                           units (inc (crypto/next-int rng 3))
+                           units (* u-mult (inc (crypto/next-int rng 3)))
                            wtp (+ ref-p (quot (* ref-p (+ 20 (crypto/next-int rng 60))) 100))]
                        {:request-id (str "req-ep" ep "-" idx)
                         :request-seq idx
@@ -466,16 +580,21 @@
                    :buyer-id :angel-g4-1
                    :buyer-pubkey (get-in fab [:light-nodes :angel-g4-1 :pubkey-hex])
                    :capability-type :formal-verify
-                   :units 2
+                   :units (* u-mult 2)
                    :min-sla-bps 8800
                    :budget-ech 1000000000}))
       reqs)))
 
 (defn- compute-subnet-sla-bps
-  [market subnet-id halted-subnets]
+  [market subnet-id halted-subnets infra-stats]
   (cond
     (contains? halted-subnets subnet-id) 0
-    (= subnet-id "bitecho.org/infra") 9900
+    (= subnet-id "bitecho.org/infra")
+    (let [ups (long (or (:upgrades-executed infra-stats) 0))
+          stalls (long (or (:upgrade-stalls infra-stats) 0))]
+      (if (pos? ups)
+        (max 0 (long (Math/round (* 10000.0 (/ (double (max 0 (- ups stalls))) (double ups))))))
+        10000))
     :else
     (let [rel (long (get-in market [:per-subnet-released subnet-id] 0))
           ref (long (get-in market [:per-subnet-refunded subnet-id] 0))
@@ -484,12 +603,90 @@
         (long (Math/round (* 10000.0 (/ (double rel) (double tot)))))
         9700))))
 
+(defn- step-treasury-vault-schedules
+  "Executes gradual Bootstrap drawdown (`:bootstrap-drawdown-lambda`) before Year-3 sunset
+   AND Core-Team linear vesting after cliff via real 2-of-5 multisig `vault/spend-vault`."
+  [fab ep scaled-cfg treas-stats]
+  (let [interval (max 1 (long (:vest-claim-interval-epochs scaled-cfg)))
+        sunset-ep (long (:bootstrap-sunset-epoch scaled-cfg))
+        core-cliff (long (:core-team-cliff-epochs scaled-cfg))
+        core-vest (max 1 (long (:core-team-vest-epochs scaled-cfg)))
+        signers [(get-in fab [:light-nodes :founder-simon])
+                 (get-in fab [:light-nodes :agent-axiom])]]
+    (if-not (zero? (mod ep interval))
+      {:fabric fab :treas-stats treas-stats}
+      (let [;; 1. Gradual Bootstrap drawdown prior to sunset
+            [fab1 ts1]
+            (if (< ep sunset-ep)
+              (let [vid "vault:root/bootstrap"
+                    v (get-in fab [:state :vaults vid])
+                    bal (long (or (:balance v) 0))
+                    lam (double (or (:bootstrap-drawdown-lambda scaled-cfg) 0.0))
+                    interval-lam (- 1.0 (Math/pow (- 1.0 lam) (double interval)))
+                    draw-amt (min bal (long (Math/floor (* (double bal) interval-lam))))]
+                (if (pos? draw-amt)
+                  (let [rec-pk (get-in fab [:home-nodes :home-austin-1 :pubkey-hex])
+                        p-info (get-in fab [:vault-puzzles vid])
+                        sol (fabric/build-multisig-vault-solution
+                             {:fabric fab
+                              :vault-id vid
+                              :receiver-pubkey rec-pk
+                              :release-amount draw-amt
+                              :next-puzzle-hash (:puzzle-hash v)
+                              :signers signers})
+                        res (vault/spend-vault (:state fab)
+                                               {:vault-id vid
+                                                :vault-seq (:vault-seq v)
+                                                :puzzle-source (:puzzle-source p-info)
+                                                :solution sol
+                                                :epoch ep})]
+                    (if (:ok? res)
+                      [(assoc fab :state (:state res))
+                       (update treas-stats :bootstrap-drawn-ech (fnil + 0) draw-amt)]
+                      [fab treas-stats]))
+                  [fab treas-stats]))
+              [fab treas-stats])]
+        ;; 2. Core-Team linear vesting after cliff
+        (if (>= ep core-cliff)
+          (let [vid "vault:root/core-team/simon"
+                v (get-in fab1 [:state :vaults vid])
+                bal (long (or (:balance v) 0))
+                total-grant 2520000000
+                already-released (- total-grant bal)
+                elapsed (min core-vest (max 0 (- ep core-cliff)))
+                vested-total (quot (* total-grant elapsed) core-vest)
+                interval-tranche (max 1 (quot (* total-grant interval) core-vest))
+                claimable (min bal interval-tranche (max 0 (- vested-total already-released)))]
+            (if (pos? claimable)
+              (let [rec-pk (get-in fab1 [:light-nodes :founder-simon :pubkey-hex])
+                    p-info (get-in fab1 [:vault-puzzles vid])
+                    sol (fabric/build-multisig-vault-solution
+                         {:fabric fab1
+                          :vault-id vid
+                          :receiver-pubkey rec-pk
+                          :release-amount claimable
+                          :next-puzzle-hash (:puzzle-hash v)
+                          :signers signers})
+                    res (vault/spend-vault (:state fab1)
+                                           {:vault-id vid
+                                            :vault-seq (:vault-seq v)
+                                            :puzzle-source (:puzzle-source p-info)
+                                            :solution sol
+                                            :epoch ep})]
+                (if (:ok? res)
+                  {:fabric (assoc fab1 :state (:state res))
+                   :treas-stats (update ts1 :core-team-vested-ech (fnil + 0) claimable)}
+                  {:fabric fab1 :treas-stats ts1}))
+              {:fabric fab1 :treas-stats ts1}))
+          {:fabric fab1 :treas-stats ts1})))))
+
 (defn- step-partner-sla-vesting
   "Executes real SCI `vault/spend-vault` SLA-gated vesting for each of the 7 Genesis Partners
-   on vesting claim epochs. When a partner's sponsored commercial subnet is halted or below
-   `min-sla-bps`, the real SCI puzzle rejects the spend and emits a counted `:diagnose`
-   `:partner-vesting-sla-paused` (INV-5 / INV-7)."
-  [fab market ep scaled-cfg halted-subnets partner-stats]
+   on vesting claim epochs. Caps each claim epoch to a single interval tranche so paused epochs
+   defer/forgo that epoch's tranche with NO instant lump-sum catch-up on recovery.
+   When a partner's sponsored commercial subnet is halted or below `min-sla-bps`, the real SCI
+   puzzle rejects the spend and emits a counted `:diagnose` `:partner-vesting-sla-paused` (INV-5 / INV-7)."
+  [fab market ep scaled-cfg halted-subnets infra-stats partner-stats]
   (let [cliff (long (:partner-cliff-epochs scaled-cfg))
         vest-dur (max 1 (long (:partner-vest-epochs scaled-cfg)))
         interval (max 1 (long (:vest-claim-interval-epochs scaled-cfg)))
@@ -508,10 +705,11 @@
                  already-released (- total-grant bal)
                  elapsed (min vest-dur (max 0 (- ep cliff)))
                  vested-total (quot (* total-grant elapsed) vest-dur)
-                 claimable (min bal (max 0 (- vested-total already-released)))]
+                 interval-tranche (max 1 (quot (* total-grant interval) vest-dur))
+                 claimable (min bal interval-tranche (max 0 (- vested-total already-released)))]
              (if (<= claimable 0)
                {:fabric fabric :partner-stats partner-stats}
-               (let [sla-bps (compute-subnet-sla-bps market subnet-id halted-subnets)
+               (let [sla-bps (compute-subnet-sla-bps market subnet-id halted-subnets infra-stats)
                      p-node (get-in fabric [:light-nodes pid])
                      sol (fabric/build-sla-vesting-solution
                           {:fabric fabric
@@ -539,20 +737,21 @@
          partner-subnet-map)))))
 
 ;; =============================================================================
-;; 6. Full-Network 36-Month Lifecycle Trial & Multi-Scenario CRN Sweep
+;; 6. Full-Network 36-Month+ Lifecycle Trial & Multi-Scenario CRN Sweep
 ;; =============================================================================
 
 (defn run-full-network-trial
-  "Runs a deterministic pure Sans-IO 36-month dual-track full-network trial across Protocol
-   Subnets and Commercial Subnets with real Ed25519 keys, real SCI vault puzzles, real one-shot
-   HTLC escrows, demand-gated conditional mint, Year-3 bootstrap sunset burn, and 7-bucket
-   42B conservation verification on EVERY epoch."
+  "Runs a deterministic pure Sans-IO dual-track full-network trial across Protocol Subnets
+   and Commercial Subnets with real Ed25519 keys, real SCI vault puzzles, real one-shot HTLC
+   escrows, real NetworkBus routing, real validator-set rotations, demand-gated conditional
+   mint, gradual bootstrap drawdown + Year-3 sunset burn, core-team & SLA-gated partner vesting,
+   and 7-bucket 42B conservation verification on EVERY epoch."
   [{:keys [scenario seed time-compression-factor epochs g4-anchor-threshold
            extra-commercial-subnets return-fabric? theta]
     :or {scenario :baseline-g4-angel-heavy
          seed 20261124
          time-compression-factor 72
-         epochs 365
+         epochs 450
          g4-anchor-threshold 2
          extra-commercial-subnets []
          return-fabric? false}
@@ -560,6 +759,7 @@
   (let [c (max 1 (long time-compression-factor))
         n-epochs (max 1 (long epochs))
         scaled-cfg (scale-full-lifecycle-config theta c)
+        u-mult (demand-unit-multiplier scaled-cfg)
         fab0 (-> (fabric/init-fabric {:seed seed})
                  (configure-fabric-for-lifecycle scaled-cfg))
         {:keys [fabric market]} (init-dual-track-market fab0 scaled-cfg
@@ -572,12 +772,14 @@
         g4-close-ep (long (:g4-seed-close-epoch scaled-cfg))
         init-partner-stats (into {} (map (fn [[pid _]] [pid {:vested-ech 0 :vested-claims 0 :paused-claims 0}])
                                          partner-subnet-map))
-        init-infra-stats {:upgrades-executed 0 :upgrade-stalls 0 :rotations-executed 0 :infra-draws []}]
+        init-infra-stats {:upgrades-executed 0 :upgrade-stalls 0 :rotations-executed 0 :rotations-verified 0 :infra-draws []}
+        init-treas-stats {:bootstrap-drawn-ech 0 :core-team-vested-ech 0}]
     (loop [ep 1
            fab fabric
            mkt market
            partner-stats init-partner-stats
            infra-stats init-infra-stats
+           treas-stats init-treas-stats
            all-conserved? true
            g4-state {:onboarded? false :seed-closed? false :anchor-threshold (long g4-anchor-threshold)}]
       (if (> ep n-epochs)
@@ -586,17 +788,32 @@
               all-subs (concat base-commercial-subnets extra-commercial-subnets
                                (when (= :high-velocity-commercial scenario) ["root/markets/organic-agent-x"]))
               per-sub-sla (into (sorted-map)
-                                (map (fn [sid] [sid (compute-subnet-sla-bps mkt sid #{})]))
+                                (map (fn [sid] [sid (compute-subnet-sla-bps mkt sid #{} infra-stats)]))
                                 (conj (vec all-subs) "bitecho.org/infra"))
               partner-summary (into (sorted-map)
                                     (map (fn [[pid ps]]
                                            [pid (assoc ps :remaining-vault-ech
                                                        (get-in st [:vaults (str "vault:root/partners/" (name pid)) :balance] 0))]))
                                     partner-stats)
-              larg-rev (into (sorted-map)
+              larg-bal (into (sorted-map)
                              (map (fn [lid]
                                     [lid (fabric/project-light-node-balance fab lid)]))
                              [:builder-larg-1 :builder-larg-2 :builder-larg-3])
+              larg-earned (into (sorted-map)
+                                (map (fn [lid]
+                                       [lid (long (get-in mkt [:per-provider-earned-revenue-ech lid] 0))]))
+                                [:builder-larg-1 :builder-larg-2 :builder-larg-3])
+              infra-bals (into (sorted-map)
+                               (map (fn [[nid n]]
+                                      [nid (long (get-in st [:ledger (:pubkey-hex n) :balance] 0))]))
+                               (:infra-nodes fab))
+              total-burned (long (or (:total-burned st) 0))
+              market-burned (long (or (:market-burned-ech fab) 0))
+              vault-burned (max 0 (- total-burned market-burned))
+              surge-count (count (filter (fn [[_ o]]
+                                           (let [ref-p (get-in market/capability-catalog [(:capability-type o) :ref-price-ech] 150)]
+                                             (> (long (:unit-price-ech o)) ref-p)))
+                                         (:offers mkt)))
               infra-digest (str/lower-case (basalt/bytes->hex (crypto/sha256 (fressian/encode-canonical (:infra-draws infra-stats)))))
               merged-diags (merge-with +
                                        (or (:diagnostics fab) {})
@@ -609,19 +826,28 @@
                    :scaled-config scaled-cfg
                    :all-epochs-conserved? (and all-conserved? (true? (:ok? final-cons)))
                    :final-conservation final-cons
+                   :failed-receipts-count (long (or (:failed-receipts-count st) 0))
                    :cleared-gmv-ech (long (:total-cleared-gmv-ech mkt 0))
                    :cleared-orders (long (:total-cleared-orders mkt 0))
                    :uncleared-orders (long (:total-uncleared-orders mkt 0))
                    :timeout-refunds (long (:total-timeout-refunds mkt 0))
-                   :total-burned-ech (long (or (:total-burned st) 0))
+                   :total-burned-ech total-burned
+                   :market-burned-ech market-burned
+                   :vesting-vault-burned-ech vault-burned
                    :total-minted-ech (long (or (:total-minted st) 0))
+                   :bootstrap-drawn-ech (long (:bootstrap-drawn-ech treas-stats 0))
+                   :core-team-vested-ech (long (:core-team-vested-ech treas-stats 0))
                    :sunset-burned-ech (long (or (:sunset-custody-burned st) 0))
                    :subnet-fees-collected-ech (long (:total-subnet-fees-ech mkt 0))
+                   :surge-priced-offers surge-count
+                   :bus-seq (long (get-in fab [:bus :seq] 0))
+                   :infra-validator-balances-ech infra-bals
                    :per-subnet-sla-bps per-sub-sla
                    :per-subnet-gmv-ech (into (sorted-map) (:per-subnet-gmv-ech mkt))
                    :per-subnet-cleared-orders (into (sorted-map) (:per-subnet-cleared-orders mkt))
                    :partner-vesting partner-summary
-                   :larg-builder-sovereign-revenue-ech larg-rev
+                   :larg-builder-sovereign-revenue-ech larg-bal
+                   :larg-builder-earned-revenue-ech larg-earned
                    :g4-angels g4-state
                    :protocol-infra (-> infra-stats
                                        (dissoc :infra-draws)
@@ -633,23 +859,24 @@
             out))
 
         ;; --- Epoch Step ---
-        (let [;; 1. Protocol subnet infra step (strictly isolated PRNG stream)
-              infra-next (step-protocol-infra-epoch (:master-rng fab) ep scaled-cfg infra-stats)
+        (let [;; 1. Route real signed envelope through NetworkBus (isolated PRNG stream)
+              fab-bus (step-network-bus-epoch fab ep)
               ;; 2. Dynamic organic commercial subnet spawn in :high-velocity-commercial
               [fab-dyn mkt-dyn]
               (if (and (= :high-velocity-commercial scenario) (= ep organic-spawn-ep))
-                (let [ch (charter-commercial-subnet fab mkt {:subnet-id "root/markets/organic-agent-x"
-                                                             :epoch ep
-                                                             :capability-types [:llm-inference :tac-auction-agent :artifact-storage]})]
+                (let [ch (charter-commercial-subnet fab-bus mkt {:subnet-id "root/markets/organic-agent-x"
+                                                                 :epoch ep
+                                                                 :unit-mult u-mult
+                                                                 :capability-types [:llm-inference :tac-auction-agent :artifact-storage]})]
                   [(:fabric ch) (:market ch)])
-                [fab mkt])
+                [fab-bus mkt])
               ;; 3. Commercial subnet halt injection (INV-5)
               halted-subs (if (and (= :subnet-halt-fault-isolation scenario)
                                    (>= ep halt-start)
                                    (<= ep halt-end))
                             #{"root/markets/larg-tac"}
                             #{})
-              ;; 4. Endogenous capability market clearing + bounded batch HTLC settlement
+              ;; 4. Endogenous capability market clearing + single-block batch HTLC settlement
               reqs (generate-epoch-demand fab-dyn scenario ep scaled-cfg)
               clear-res (market/clear-market-epoch mkt-dyn reqs {:epoch ep :halted-subnets halted-subs})
               settle-res (market/settle-cleared-batches
@@ -660,25 +887,35 @@
                            :halted-subnets halted-subs})
               fab-mkt (:fabric settle-res)
               mkt-next (:market settle-res)
-              ;; 5. Real SLA-gated Genesis Partner vesting (isolated per-partner sub-vaults)
-              vest-res (step-partner-sla-vesting fab-mkt mkt-next ep scaled-cfg halted-subs partner-stats)
+              ;; 5. Protocol subnet infra step (isolated PRNG stream + real :rotate-validator-set)
+              infra-res (step-protocol-infra-epoch fab-mkt ep scaled-cfg infra-stats)
+              fab-infra (:fabric infra-res)
+              infra-next (:infra-stats infra-res)
+              ;; 6. Gradual Bootstrap drawdown (pre-sunset) + Core-Team linear vesting (post-cliff)
+              treas-res (step-treasury-vault-schedules fab-infra ep scaled-cfg treas-stats)
+              fab-treas (:fabric treas-res)
+              tstats-next (:treas-stats treas-res)
+              ;; 7. Real SLA-gated Genesis Partner vesting (isolated per-partner sub-vaults, no lump-sum catch-up)
+              vest-res (step-partner-sla-vesting fab-treas mkt-next ep scaled-cfg halted-subs infra-next partner-stats)
               fab-vest (:fabric vest-res)
               pstats-next (:partner-stats vest-res)
-              ;; 6. Demand-gated conditional mint (20/80 split) + Year-3 Bootstrap Sunset Burn
+              ;; 8. Demand-gated conditional mint (idempotent if already ran on epoch ep's finalized block)
+              ;;    + Year-3 Bootstrap Sunset Burn
               st-treas (state-machine/apply-epoch-treasury-boundary (:state fab-vest) ep)
               sunset-res (vault/apply-bootstrap-sunset st-treas ep)
               fab-next (assoc fab-vest :state (:state sunset-res))
-              ;; 7. G4 Angels :shared-encrypted circle milestone tracking (M4-9 onboard, M10-18 close)
+              ;; 9. G4 Angels :shared-encrypted circle milestone tracking (M4-9 onboard, M10-18 close)
               g4-next (cond-> g4-state
                         (>= ep g4-onboard-ep) (assoc :onboarded? true)
                         (>= ep g4-close-ep) (assoc :seed-closed? true))
-              ;; 8. Verify exact 7-bucket 42B ECHO conservation on EVERY epoch (INV-2)
+              ;; 10. Verify exact 7-bucket 42B ECHO conservation on EVERY epoch (INV-2)
               ep-cons-ok? (true? (:ok? (fabric/verify-fabric-conservation fab-next)))]
           (recur (inc ep)
                  fab-next
                  mkt-next
                  pstats-next
                  infra-next
+                 tstats-next
                  (and all-conserved? ep-cons-ok?)
                  g4-next))))))
 
@@ -688,7 +925,7 @@
     :or {scenarios all-scenarios
          seeds [20261124]
          time-compression-factor 72
-         epochs 365
+         epochs 450
          g4-anchor-threshold 2}}]
   (let [results (vec (for [scen scenarios
                            s seeds]
