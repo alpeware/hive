@@ -891,20 +891,19 @@
 
 (defn- reconcile-state-machine-burns
   "Reconciles `P1` split-brain between `state_machine`'s `:epoch-burns`/`:epoch-settlement-takes`
-   and `vault.cljc`'s `:total-burned` without double-counting."
-  [st]
-  (let [sum-burns (reduce + 0 (vals (or (:epoch-burns st) {})))
-        sum-takes (reduce + 0 (vals (or (:epoch-settlement-takes st) {})))
-        prev-burns (long (or (:reconciled-epoch-burns st) 0))
-        prev-takes (long (or (:reconciled-epoch-takes st) 0))
-        delta (+ (max 0 (- sum-burns prev-burns))
-                 (max 0 (- sum-takes prev-takes)))]
+   and `vault.cljc`'s `:total-burned` without double-counting, immune to `prune-epoch-state`
+   evicting epochs older than the retention window."
+  [st-before st-after]
+  (let [pos-delta (fn [m-before m-after]
+                    (reduce-kv (fn [acc k v]
+                                 (+ acc (max 0 (- (long v) (long (get m-before k 0))))))
+                               0
+                               (or m-after {})))
+        delta (+ (pos-delta (:epoch-burns st-before) (:epoch-burns st-after))
+                 (pos-delta (:epoch-settlement-takes st-before) (:epoch-settlement-takes st-after)))]
     (if (pos? delta)
-      (-> st
-          (update :total-burned (fnil + 0) delta)
-          (assoc :reconciled-epoch-burns sum-burns
-                 :reconciled-epoch-takes sum-takes))
-      st)))
+      (update st-after :total-burned (fnil + 0) delta)
+      st-after)))
 
 (defn apply-finalized-receipts
   "Applies a batch of finalized receipts through real `bitecho.state-machine/execute-finalized-blocks`:
@@ -937,12 +936,12 @@
                    :parent-hash parent-hash
                    :epoch ep
                    :payload known}
-            st-exec (-> st
-                        (assoc-in [:blocks block-hash] block)
-                        (update :finalized-blocks conj block-hash)
-                        (assoc :latest-finalized-block-hash block-hash)
-                        (state-machine/execute-finalized-blocks)
-                        (reconcile-state-machine-burns))]
+            st-raw (-> st
+                       (assoc-in [:blocks block-hash] block)
+                       (update :finalized-blocks conj block-hash)
+                       (assoc :latest-finalized-block-hash block-hash)
+                       (state-machine/execute-finalized-blocks))
+            st-exec (reconcile-state-machine-burns st st-raw)]
         {:ok? (empty? unknown)
          :fabric (-> fab-diag
                      (assoc :state st-exec :block-seq next-seq))
