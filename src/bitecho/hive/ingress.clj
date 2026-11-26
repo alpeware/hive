@@ -115,18 +115,20 @@
     (reify event-src/IEventSource
       (poll-event! [_ cursor timeout-ms]
         (let [cur (long (or cursor (read-cursor cur-file)))
-              cmd [(or node-bin bindings/DEFAULT-NODE-BIN)
-                   (or light-node-js bindings/DEFAULT-LIGHT-NODE-JS)
-                   "wait-event"
-                   "--events-out" ev-file
-                   "--cursor" (str cur)
-                   "--timeout-ms" (str (long (or timeout-ms 60000)))]
+              cmd (cond-> [(or node-bin bindings/DEFAULT-NODE-BIN)
+                           (or light-node-js bindings/DEFAULT-LIGHT-NODE-JS)
+                           "wait-event"]
+                    state-dir (into ["--state-dir" (str state-dir)])
+                    true (into ["--events-out" ev-file
+                                "--after-ts" (str cur)
+                                "--timeout-ms" (str (long (or timeout-ms 60000)))]))
               {:keys [exit out]} (exec cmd)
               parsed (when (zero? (long (or exit -1)))
                        (try (json/read-str (str/trim (or out "")) :key-fn keyword)
                             (catch Exception _ nil)))
-              raw-ev (or (:event parsed) parsed)
-              next-cur (long (max cur (long (or (:next_cursor parsed)
+              raw-ev (if (map? (:event parsed)) (:event parsed) parsed)
+              next-cur (long (max cur (long (or (:timestamp_ms raw-ev)
+                                                (:next_cursor parsed)
                                                 (:cursor parsed)
                                                 (:event_id raw-ev)
                                                 cur))))]
