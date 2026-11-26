@@ -79,12 +79,13 @@
 
 (defn evaluate-offer-policy
   "Pure function evaluating a `p2p-offer-received` event against `policy`
-   (`:all`, `:roster-only`, or `:none`). Never drops silently: every decision
-   carries a structured `:diagnose` record."
+   (`:roster-only` default, `:all`, or `:none`). Never drops silently: every
+   decision carries a structured `:diagnose` record."
   [policy roster-set raw-ev]
   (let [sid (or (:session_id raw-ev) (:session-id raw-ev))
         from (:from raw-ev)
-        allow? (case (keyword (or policy :all))
+        eff-policy (keyword (or policy :roster-only))
+        allow? (case eff-policy
                  :all (boolean (seq (str sid)))
                  :roster-only (boolean (and (seq (str sid)) (contains? (set roster-set) from)))
                  :none false
@@ -93,52 +94,74 @@
       {:action :answer
        :session-id sid
        :from from
-       :diagnose {:effect :diagnose :reason :p2p-offer-answered :session-id sid :from from}}
+       :diagnose {:effect :diagnose :reason :p2p-offer-answered :policy eff-policy :session-id sid :from from}}
       {:action :ignore
        :session-id sid
        :from from
-       :diagnose {:effect :diagnose :reason :p2p-offer-ignored :policy policy :session-id sid :from from}})))
+       :diagnose {:effect :diagnose :reason :p2p-offer-ignored :policy eff-policy :session-id sid :from from}})))
 
 ;; =============================================================================
-;; 3. Live Bitecho IEventSource
+;; 3. Live Bitecho IEventSource (F2 fail-closed, F3 caller-committed cursor, F6 loud errors)
 ;; =============================================================================
 
 (defn make-bitecho-ingress
-  "Creates a live `mealy.event.source/IEventSource` over `bitecho-light-node.cjs wait-event`,
-   persisting the cursor to `<state-dir>/ingress-cursor.edn` and applying `offer-policy`."
+  "Creates a live `mealy.event.source/IEventSource` over `bitecho-light-node.cjs wait-event`.
+   Does NOT persist the cursor inside `poll-event!` (F3: caller commits cursor via
+   `write-cursor!` AFTER processing completes so mid-turn crashes replay instead of losing events).
+   Defaults to fail-closed `:offer-policy :roster-only` (F2) and emits explicit `:diagnose`
+   on non-zero `wait-event` failures (F6)."
   [{:keys [node-bin light-node-js state-dir events-file cursor-file offer-policy roster-set ctl-handler exec-fn]}]
   (let [ev-file (str (or events-file (str state-dir "/events.jsonl")))
         cur-file (io/file (or cursor-file (str state-dir "/ingress-cursor.edn")))
         exec (or exec-fn bindings/default-exec-fn)
-        policy (or offer-policy :all)
+        policy (keyword (or offer-policy :roster-only))
         roster (set (or roster-set #{}))]
     (reify event-src/IEventSource
       (poll-event! [_ cursor timeout-ms]
-        (let [cur (long (or cursor (read-cursor cur-file)))
-              cmd (cond-> [(or node-bin bindings/DEFAULT-NODE-BIN)
-                           (or light-node-js bindings/DEFAULT-LIGHT-NODE-JS)
+        (let [cur (long (if (some? cursor) cursor (read-cursor cur-file)))
+              cmd (cond-> [(bindings/resolve-node-bin node-bin)
+                           (bindings/resolve-light-node-js light-node-js)
                            "wait-event"]
                     state-dir (into ["--state-dir" (str state-dir)])
                     true (into ["--events-out" ev-file
                                 "--after-ts" (str cur)
                                 "--timeout-ms" (str (long (or timeout-ms 60000)))]))
-              {:keys [exit out]} (exec cmd)
-              parsed (when (zero? (long (or exit -1)))
-                       (try (json/read-str (str/trim (or out "")) :key-fn keyword)
-                            (catch Exception _ nil)))
-              raw-ev (if (map? (:event parsed)) (:event parsed) parsed)
-              next-cur (long (max cur (long (or (:timestamp_ms raw-ev)
-                                                (:next_cursor parsed)
-                                                (:cursor parsed)
-                                                (:event_id raw-ev)
-                                                cur))))]
-          (when (> next-cur cur)
-            (write-cursor! cur-file next-cur))
-          (let [norm (normalize-bitecho-event raw-ev)]
-            (if (and (= :p2p-offer (:kind norm)) ctl-handler)
-              (let [decision (evaluate-offer-policy policy roster raw-ev)]
-                (when (= :answer (:action decision))
-                  (ctl-handler {"cmd" "p2p-answer" "session_id" (:session-id decision)}))
-                {:event nil :cursor next-cur :diagnose (:diagnose decision)})
-              {:event norm :cursor next-cur}))))
+              {:keys [exit out err]} (exec cmd)
+              exit-code (long (or exit -1))]
+          (if-not (zero? exit-code)
+            {:event nil
+             :cursor cur
+             :diagnose {:effect :diagnose
+                        :reason :wait-event-failed
+                        :exit exit-code
+                        :error (let [e (str/trim (or err ""))]
+                                 (if (str/blank? e) (str/trim (or out "wait-event-failed")) e))}}
+            (let [parsed (try (json/read-str (str/trim (or out "")) :key-fn keyword)
+                              (catch Exception _ nil))
+                  timeout? (and (map? parsed) (false? (:ok parsed)) (= "timeout" (:error parsed)))]
+              (cond
+                timeout?
+                {:event nil :cursor cur}
+
+                (and (map? parsed) (false? (:ok parsed)))
+                {:event nil
+                 :cursor cur
+                 :diagnose {:effect :diagnose
+                            :reason :wait-event-error
+                            :error (or (:error parsed) "unknown-wait-event-error")}}
+
+                :else
+                (let [raw-ev (if (map? (:event parsed)) (:event parsed) parsed)
+                      next-cur (long (max cur (long (or (:timestamp_ms raw-ev)
+                                                        (:next_cursor parsed)
+                                                        (:cursor parsed)
+                                                        (:event_id raw-ev)
+                                                        cur))))
+                      norm (normalize-bitecho-event raw-ev)]
+                  (if (and (= :p2p-offer (:kind norm)) ctl-handler)
+                    (let [decision (evaluate-offer-policy policy roster raw-ev)]
+                      (when (= :answer (:action decision))
+                        (ctl-handler {"cmd" "p2p-answer" "session_id" (:session-id decision)}))
+                      {:event nil :cursor next-cur :diagnose (:diagnose decision)})
+                    {:event norm :cursor next-cur})))))))
       (close-source! [_] nil))))

@@ -27,6 +27,9 @@
    "--backend"
    "--model"
    "--einsum-backend"
+   "--node-bin"
+   "--light-node-js"
+   "--offer-policy"
    "--state-dir"
    "--subnet-id"
    "--min-balance"
@@ -40,17 +43,20 @@
   (str "Bitecho Hive Agent Runner (HIVE-BIP-001 H1)\n"
        "Usage: clojure -M:agent [options]\n\n"
        "Options:\n"
-       "  --name <name>              Agent petname / identifier (default: hive-agent)\n"
-       "  --transport <sim|live>     Transport mode: sim (in-memory) or live (Bitecho daemon)\n"
-       "  --backend <agy|einsum|mock> Intelligence backend\n"
-       "  --model <model-id-or-path> Model identifier or local weights path\n"
-       "  --einsum-backend <backend> clj-einsum UOp backend (default: uop-intel)\n"
-       "  --state-dir <path>         Isolated light-node state directory (required for live)\n"
-       "  --subnet-id <subnet>       Target subnet (default: hive/poc)\n"
-       "  --min-balance <ech>        Minimum ECH balance floor guard (default: 2000)\n"
-       "  --max-turns <n>            Optional cap on turns before exiting\n"
-       "  --no-intro                 Skip initial subnet introduction turn\n"
-       "  --help                     Print this help message\n"))
+       "  --name <name>                    Agent petname / identifier (default: hive-agent)\n"
+       "  --transport <sim|live>           Transport mode: sim (in-memory) or live (Bitecho daemon)\n"
+       "  --backend <agy|einsum|mock>      Intelligence backend\n"
+       "  --model <model-id-or-path>       Model identifier or local weights path\n"
+       "  --einsum-backend <backend>       clj-einsum UOp backend (default: uop-intel)\n"
+       "  --node-bin <path>                Node.js binary override (env: BITECHO_NODE_BIN)\n"
+       "  --light-node-js <path>           bitecho-light-node.cjs path (env: BITECHO_LIGHT_NODE_JS)\n"
+       "  --offer-policy <roster-only|all|none> Inbound P2P offer policy (default: roster-only)\n"
+       "  --state-dir <path>               Isolated light-node state directory (required for live)\n"
+       "  --subnet-id <subnet>             Target subnet (default: hive/poc)\n"
+       "  --min-balance <ech>              Minimum ECH balance floor guard (default: 2000)\n"
+       "  --max-turns <n>                  Optional cap on turns before exiting\n"
+       "  --no-intro                       Skip initial subnet introduction turn\n"
+       "  --help                           Print this help message\n"))
 
 (defn parse-cli-args
   "Parses CLI arguments strictly against `cli-flag-inventory`. Unknown flags throw loudly."
@@ -60,6 +66,9 @@
                :backend :agy
                :model "claude-sonnet-5-5-medium"
                :einsum-backend :uop-intel
+               :node-bin nil
+               :light-node-js nil
+               :offer-policy :roster-only
                :state-dir nil
                :subnet-id "hive/poc"
                :min-balance bindings/DEFAULT-MIN-BALANCE
@@ -80,6 +89,14 @@
           "--backend" (recur (assoc opts :backend (keyword v)) more)
           "--model" (recur (assoc opts :model v) more)
           "--einsum-backend" (recur (assoc opts :einsum-backend (keyword v)) more)
+          "--node-bin" (recur (assoc opts :node-bin v) more)
+          "--light-node-js" (recur (assoc opts :light-node-js v) more)
+          "--offer-policy" (recur (assoc opts :offer-policy (case (str/lower-case (str v))
+                                                              "roster-only" :roster-only
+                                                              "all" :all
+                                                              "none" :none
+                                                              (throw (ex-info (str "Invalid --offer-policy: " v) {:value v}))))
+                                  more)
           "--state-dir" (recur (assoc opts :state-dir v) more)
           "--subnet-id" (recur (assoc opts :subnet-id v) more)
           "--min-balance" (recur (assoc opts :min-balance (Long/parseLong (str v))) more)
@@ -140,8 +157,11 @@
                            :min-balance (:min-balance state)}]}]))
 
     :net-reply
-    [(assoc state :pending-event nil)
-     {:done [{:reply (:last-reply state) :net-result payload :turn (:turn state)}]}]
+    (if (and (map? payload) (false? (:ok payload)))
+      [(assoc state :pending-event nil)
+       {:error [{:reason :net-command-failed :detail payload :turn (:turn state)}]}]
+      [(assoc state :pending-event nil)
+       {:done [{:reply (:last-reply state) :net-result payload :turn (:turn state)}]}])
 
     :net-rejected
     [(assoc state :pending-event nil)
@@ -206,7 +226,10 @@
                    :allowed-broadcast-senders (or allowed-broadcast-senders #{})
                    :mention-tokens [agent-name]
                    :max-per-window (or max-per-window 10)
-                   :window-ms (or window-ms 300000)})]
+                   :window-ms (or window-ms 300000)})
+        initial-cursor (long (if-let [rf (:read-cursor-fn transport-bundle)]
+                               (rf)
+                               0))]
     {:agent-name agent-name
      :self-pubkey self-pubkey
      :subnet-id sid
@@ -214,7 +237,8 @@
      :graph-inst graph-inst
      :transport-bundle transport-bundle
      :middleware-state mw-state
-     :cursor 0
+     :cursor initial-cursor
+     :diagnostics-log []
      :all-event-log []}))
 
 (defn step-agent-turn!
@@ -233,36 +257,61 @@
            :graph-inst executed
            :all-event-log (into (:all-event-log agent-ctx) seg))))
 
+(defn- commit-cursor-if-advanced!
+  [transport-bundle prev-cursor next-cursor]
+  (when (and (> (long next-cursor) (long prev-cursor))
+             (ifn? (:commit-cursor-fn transport-bundle)))
+    ((:commit-cursor-fn transport-bundle) (long next-cursor))))
+
 (defn drain-agent-events!
-  "Polls `IEventSource`, applies M4 middleware, and executes accepted events via
-   `step-agent-turn!` until the source returns nil or `:max-events` is reached."
+  "Polls `IEventSource`, applies M4 middleware, executes accepted events via
+   `step-agent-turn!`, commits cursor AFTER processing completes (F3), and
+   records every ingress/middleware `:diagnose` in `:diagnostics-log` (F8)."
   ([agent-ctx]
    (drain-agent-events! agent-ctx {}))
   ([agent-ctx {:keys [max-events timeout-ms base-ts] :or {max-events 100 timeout-ms 0}}]
-   (let [source (get-in agent-ctx [:transport-bundle :event-source])]
+   (let [tx-bundle (:transport-bundle agent-ctx)
+         source (:event-source tx-bundle)]
      (loop [ctx agent-ctx
             n 0]
        (if (>= n (long max-events))
          ctx
-         (let [{:keys [event cursor]} (event-src/poll-event! source (:cursor ctx) timeout-ms)]
+         (let [prev-cursor (:cursor ctx)
+               {:keys [event cursor diagnose]} (event-src/poll-event! source prev-cursor timeout-ms)
+               ctx-diag (cond-> ctx
+                          diagnose (update :diagnostics-log conj diagnose))]
            (if-not event
-             (assoc ctx :cursor cursor)
+             (do
+               (commit-cursor-if-advanced! tx-bundle prev-cursor cursor)
+               (assoc ctx-diag :cursor cursor))
              (let [now-ms (if base-ts (+ (long base-ts) (* n 1000)) (System/currentTimeMillis))
-                   [mw' verdict] (event-src/apply-middleware (:middleware-state ctx) event now-ms)
-                   ctx' (assoc ctx :cursor cursor :middleware-state mw')]
-               (if (= :accept (:action verdict))
-                 (recur (step-agent-turn! ctx' event) (inc n))
-                 (recur ctx' (inc n)))))))))))
+                   [mw' verdict] (event-src/apply-middleware (:middleware-state ctx-diag) event now-ms)
+                   ctx-mw (cond-> (assoc ctx-diag :middleware-state mw')
+                            (:diagnose verdict) (update :diagnostics-log conj (:diagnose verdict)))
+                   ctx-after (if (= :accept (:action verdict))
+                               (step-agent-turn! ctx-mw event)
+                               ctx-mw)]
+               (commit-cursor-if-advanced! tx-bundle prev-cursor cursor)
+               (recur (assoc ctx-after :cursor cursor) (inc n))))))))))
 
 (defn- make-live-transport-factory
   [opts]
-  (let [ctl-handler (bindings/make-bitecho-ctl-handler {:state-dir (:state-dir opts)})
+  (let [cursor-file (str (:state-dir opts) "/ingress-cursor.edn")
+        ctl-handler (bindings/make-bitecho-ctl-handler {:state-dir (:state-dir opts)
+                                                        :node-bin (:node-bin opts)
+                                                        :light-node-js (:light-node-js opts)})
         source (ingress/make-bitecho-ingress {:state-dir (:state-dir opts)
+                                              :node-bin (:node-bin opts)
+                                              :light-node-js (:light-node-js opts)
+                                              :cursor-file cursor-file
                                               :ctl-handler ctl-handler
-                                              :offer-policy :all})]
+                                              :offer-policy (or (:offer-policy opts) :roster-only)
+                                              :roster-set (:allowed-broadcast-senders opts)})]
     {:transport :live
      :event-source source
      :bitecho-handler ctl-handler
+     :read-cursor-fn (fn [] (ingress/read-cursor cursor-file))
+     :commit-cursor-fn (fn [c] (ingress/write-cursor! cursor-file c))
      :balance-fn (fn []
                    (let [st (ctl-handler {"cmd" "status"})]
                      (long (or (get-in st [:account :spendable])

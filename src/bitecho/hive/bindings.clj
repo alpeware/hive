@@ -12,13 +12,35 @@
             [mealy.intelligence.port :as intel-port]
             [mealy.runtime.jvm.process :as agy-proc]))
 
-(def ^:const DEFAULT-NODE-BIN
-  "Default Node.js binary path for invoking `bitecho-light-node.cjs`."
-  (str (System/getProperty "user.home") "/.local/bin/node"))
+(defn resolve-node-bin
+  "Resolves Node.js binary path from explicit override, `BITECHO_NODE_BIN` env,
+   or `node` on PATH."
+  ([] (resolve-node-bin nil))
+  ([override]
+   (or (when (and override (not (str/blank? (str override)))) (str override))
+       (when-let [env-v (System/getenv "BITECHO_NODE_BIN")]
+         (when-not (str/blank? env-v) env-v))
+       "node")))
 
-(def ^:const DEFAULT-LIGHT-NODE-JS
-  "Default path to the built `bitecho-light-node.cjs` CLI bundle."
-  "/home/simonpure/src/alpeware/bitecho/dist/bitecho-light-node.cjs")
+(defn resolve-light-node-js
+  "Resolves `bitecho-light-node.cjs` path from explicit override, `BITECHO_LIGHT_NODE_JS`
+   env, or relative `../bitecho/dist/bitecho-light-node.cjs`."
+  ([] (resolve-light-node-js nil))
+  ([override]
+   (or (when (and override (not (str/blank? (str override)))) (str override))
+       (when-let [env-v (System/getenv "BITECHO_LIGHT_NODE_JS")]
+         (when-not (str/blank? env-v) env-v))
+       "../bitecho/dist/bitecho-light-node.cjs")))
+
+(defn resolve-einsum-model
+  "Resolves default `clj-einsum` model directory from explicit override,
+   `CLJ_EINSUM_MODEL_DIR` env, or relative `../clj-einsum/.models/gemma-4-E2B-it`."
+  ([] (resolve-einsum-model nil))
+  ([override]
+   (or (when (and override (not (str/blank? (str override)))) (str override))
+       (when-let [env-v (System/getenv "CLJ_EINSUM_MODEL_DIR")]
+         (when-not (str/blank? env-v) env-v))
+       "../clj-einsum/.models/gemma-4-E2B-it")))
 
 (def ^:const DEFAULT-MIN-BALANCE
   "Default minimum ECH balance floor guard for outbound Bitecho commands."
@@ -37,8 +59,8 @@
   "Invokes `bitecho-light-node.cjs ctl --state-dir <dir> ...` and parses JSON output.
    Never fails silently: non-zero exit returns `{:ok false :exit <n> :error <str>}`."
   [{:keys [node-bin light-node-js state-dir exec-fn]} & args]
-  (let [cmd (into [(or node-bin DEFAULT-NODE-BIN)
-                   (or light-node-js DEFAULT-LIGHT-NODE-JS)
+  (let [cmd (into [(resolve-node-bin node-bin)
+                   (resolve-light-node-js light-node-js)
                    "ctl" "--state-dir" (str state-dir)]
                   (map str args))
         {:keys [exit out err]} ((or exec-fn default-exec-fn) cmd)]
@@ -102,7 +124,7 @@
    Accepts injectable `:init-fn`, `:gen-fn`, `:close-fn` for hermetic testing."
   [opts]
   (let [session-atom (atom nil)
-        model (or (:model opts) "/home/simonpure/src/alpeware/clj-einsum/.models/gemma-4-E2B-it")
+        model (resolve-einsum-model (:model opts))
         backend (keyword (or (:einsum-backend opts) (:backend opts) :uop-intel))
         precision (keyword (or (:precision opts) :int4))
         max-new-tokens (long (or (:max-new-tokens opts) 96))
