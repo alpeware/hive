@@ -1,6 +1,7 @@
 (ns bitecho.hive.test-runner
   "Test runner for Bitecho Hive (`alpeware/hive`)."
-  (:require [bitecho.hive.arena-bounty-test]
+  (:require [bitecho.hive.agent-runner-test]
+            [bitecho.hive.arena-bounty-test]
             [bitecho.hive.core-test]
             [bitecho.hive.genesis-test]
             [bitecho.hive.rl-env-test]
@@ -15,7 +16,8 @@
             [clojure.test :as t]))
 
 (def ^:private all-test-namespaces
-  ['bitecho.hive.core-test
+  ['bitecho.hive.agent-runner-test
+   'bitecho.hive.core-test
    'bitecho.hive.arena-bounty-test
    'bitecho.hive.rl-env-test
    'bitecho.hive.rolling-upgrade-sim-test
