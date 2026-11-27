@@ -9,6 +9,7 @@
   (:require [bitecho.hive.bindings :as bindings]
             [bitecho.hive.ingress :as ingress]
             [bitecho.hive.transport :as transport]
+            [bitecho.hive.twin-coordinator :as twin-coord]
             [clojure.string :as str]
             [mealy.agent.core :as agent-core]
             [mealy.event.source :as event-src]
@@ -23,6 +24,10 @@
 (def cli-flag-inventory
   "Authoritative CLI flag inventory verified by automated flag-inventory tests."
   ["--name"
+   "--mode"
+   "--seat"
+   "--coordinator-pubkey"
+   "--max-dm-per-peer"
    "--transport"
    "--backend"
    "--model"
@@ -44,6 +49,10 @@
        "Usage: clojure -M:agent [options]\n\n"
        "Options:\n"
        "  --name <name>                    Agent petname / identifier (default: hive-agent)\n"
+       "  --mode <default|twin-seat>       Agent graph mode: default or twin-seat (D41 Sans-IO responder)\n"
+       "  --seat <seat-id>                 Digital twin seat ID when --mode twin-seat (simon|axiom|nexus|vector|lumen)\n"
+       "  --coordinator-pubkey <hex>       Optional coordinator pubkey allowlist for --mode twin-seat\n"
+       "  --max-dm-per-peer <n>            M4 DM loop-guard cap per peer per window (default: 8; 0 disables)\n"
        "  --transport <sim|live>           Transport mode: sim (in-memory) or live (Bitecho daemon)\n"
        "  --backend <agy|einsum|mock>      Intelligence backend\n"
        "  --model <model-id-or-path>       Model identifier or local weights path\n"
@@ -62,6 +71,10 @@
   "Parses CLI arguments strictly against `cli-flag-inventory`. Unknown flags throw loudly."
   [args]
   (loop [opts {:agent-name "hive-agent"
+               :mode :default
+               :seat nil
+               :coordinator-pubkey nil
+               :max-dm-per-peer-window 8
                :transport :live
                :backend :agy
                :model "claude-sonnet-5-5-medium"
@@ -81,6 +94,15 @@
       (let [[k v & more] rem]
         (case k
           "--name" (recur (assoc opts :agent-name v) more)
+          "--mode" (recur (assoc opts :mode (case (str/lower-case (str v))
+                                              "default" :default
+                                              "twin-seat" :twin-seat
+                                              (throw (ex-info (str "Invalid --mode: " v) {:value v}))))
+                          more)
+          "--seat" (recur (assoc opts :seat (keyword (str/lower-case (str v)))) more)
+          "--coordinator-pubkey" (recur (assoc opts :coordinator-pubkey (str v)) more)
+          "--max-dm-per-peer" (let [n (Long/parseLong (str v))]
+                                (recur (assoc opts :max-dm-per-peer-window (when (pos? n) n)) more))
           "--transport" (recur (assoc opts :transport (case (str/lower-case (str v))
                                                         ("sim" "in-memory") :in-memory
                                                         "live" :live
@@ -148,9 +170,10 @@
           ev (:pending-event state)]
       (if (= :dm (:kind ev))
         [(assoc state :last-reply reply-text)
-         {:net-send [{:peer (:from ev)
-                      :message reply-text
-                      :min-balance (:min-balance state)}]}]
+         {:net-send [(cond-> {:peer (:from ev)
+                              :message reply-text
+                              :min-balance (:min-balance state)}
+                       (:session-id ev) (assoc :session-id (:session-id ev)))]}]
         [(assoc state :last-reply reply-text)
          {:net-broadcast [{:subnet-id (or (:subnet-id ev) (:subnet-id state))
                            :message reply-text
@@ -200,14 +223,21 @@
 ;; =============================================================================
 
 (defn init-agent-runtime!
-  "Binds `hive-agent-graph` onto a parameterized device (`:in-memory` or `:live`),
-   initializes M4 middleware state, and returns a runnable agent context."
-  [{:keys [agent-name self-pubkey subnet-id min-balance transport-bundle intelligence-port
-           allowed-broadcast-senders max-per-window window-ms]}]
+  "Binds `hive-agent-graph` (or `twin-seat-graph` when `:mode :twin-seat`) onto a
+   parameterized device (`:in-memory` or `:live`), initializes M4 middleware state,
+   and returns a runnable agent context."
+  [{:keys [agent-name mode seat coordinator-pubkey self-pubkey subnet-id min-balance transport-bundle intelligence-port
+           allowed-broadcast-senders max-per-window window-ms max-dm-per-peer-window]}]
   (let [sid (or subnet-id "hive/poc")
         min-bal (long (or min-balance bindings/DEFAULT-MIN-BALANCE))
         bal (long (if-let [bf (:balance-fn transport-bundle)] (bf) 25000))
-        graph-ast (hive-agent-graph {:agent-name agent-name :subnet-id sid :min-balance min-bal})
+        graph-ast (if (= :twin-seat mode)
+                    (twin-coord/twin-seat-graph {:seat-id (or seat (keyword agent-name))
+                                                 :agent-name agent-name
+                                                 :subnet-id sid
+                                                 :min-balance min-bal
+                                                 :coordinator-pubkey coordinator-pubkey})
+                    (hive-agent-graph {:agent-name agent-name :subnet-id sid :min-balance min-bal}))
         dev-ast [:device {:id (keyword (str agent-name "-device"))}
                  [:cap {:id :storage-cas :type :storage/cas}]
                  [:cap {:id :llm-port
@@ -222,11 +252,13 @@
         dev-inst (binder/compile-device dev-ast)
         graph-inst (binder/bind-agent graph-ast dev-inst {})
         mw-state (event-src/init-middleware-state
-                  {:self-id self-pubkey
-                   :allowed-broadcast-senders (or allowed-broadcast-senders #{})
-                   :mention-tokens [agent-name]
-                   :max-per-window (or max-per-window 10)
-                   :window-ms (or window-ms 300000)})
+                  (cond-> {:self-id self-pubkey
+                           :allowed-broadcast-senders (or allowed-broadcast-senders #{})
+                           :mention-tokens [agent-name]
+                           :max-per-window (or max-per-window 10)
+                           :window-ms (or window-ms 300000)}
+                    (some? max-dm-per-peer-window)
+                    (assoc :max-dm-per-peer-window max-dm-per-peer-window)))
         initial-cursor (long (if-let [rf (:read-cursor-fn transport-bundle)]
                                (rf)
                                0))]

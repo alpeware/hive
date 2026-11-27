@@ -99,10 +99,14 @@
                           "--min-balance" (str (or (get cmd-map "min_balance") DEFAULT-MIN-BALANCE)))
 
         "send"
-        (run-bitecho-ctl! cfg "send"
-                          "--peer" (str (get cmd-map "peer" ""))
-                          "--message" (str (get cmd-map "message" ""))
-                          "--min-balance" (str (or (get cmd-map "min_balance") DEFAULT-MIN-BALANCE)))
+        (let [sid (get cmd-map "session_id")
+              args (cond-> ["send"
+                            "--peer" (str (get cmd-map "peer" ""))
+                            "--message" (str (get cmd-map "message" ""))
+                            "--min-balance" (str (or (get cmd-map "min_balance") DEFAULT-MIN-BALANCE))]
+                     (and sid (not (str/blank? (str sid))))
+                     (into ["--session-id" (str sid)]))]
+          (apply run-bitecho-ctl! cfg args))
 
         "inbox"
         (run-bitecho-ctl! cfg "inbox" "--peek")
@@ -198,11 +202,18 @@
               ms (/ (- (System/nanoTime) t0) 1e6)]
           (if (:error parsed)
             {:error true :reason (:reason parsed) :model-ms ms}
-            {:text (str (or (:response parsed) ""))
-             :model (or (:model req) model)
-             :new-tokens (long (or (:tokens parsed) 0))
-             :tool-calls (long (or (:tool-calls parsed) 0))
-             :model-ms ms})))
+            (let [in-toks (:input-tokens parsed)
+                  out-toks (:output-tokens parsed)
+                  real-split? (and (number? in-toks) (number? out-toks))]
+              (cond-> {:text (str (or (:response parsed) ""))
+                       :model (or (:model req) model)
+                       :prompt-tokens (when real-split? (long in-toks))
+                       :new-tokens (when real-split? (long out-toks))
+                       :token-accounting (if real-split? :real :unavailable)
+                       :tool-calls (long (or (:tool-calls parsed) 0))
+                       :model-ms ms}
+                (number? (:tokens parsed))
+                (assoc :cumulative-tokens (long (:tokens parsed))))))))
 
       (stop-session! [_]
         (try (agy-proc/stop-agy-session! {:working-dir working-dir :model model})

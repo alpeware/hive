@@ -12,6 +12,7 @@
             [bitecho.hive.sim-market-test]
             [bitecho.hive.top-loop-test]
             [bitecho.hive.trace-viz-test]
+            [bitecho.hive.twin-coordinator-test]
             [bitecho.hive.twin-stage1-test]
             [clojure.test :as t]))
 
@@ -28,6 +29,7 @@
    'bitecho.hive.sim-lifecycle-test
    'bitecho.hive.sim-market-test
    'bitecho.hive.trace-viz-test
+   'bitecho.hive.twin-coordinator-test
    'bitecho.hive.twin-stage1-test])
 
 (defn- parse-selected-namespaces

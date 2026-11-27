@@ -61,12 +61,14 @@
          :raw raw-ev}
 
         "message-received"
-        {:id eid
-         :kind :dm
-         :from (:from raw-ev)
-         :subnet-id (:subnet_id raw-ev)
-         :text (str (or (:text raw-ev) ""))
-         :raw raw-ev}
+        (cond-> {:id eid
+                 :kind :dm
+                 :from (:from raw-ev)
+                 :subnet-id (:subnet_id raw-ev)
+                 :text (str (or (:text raw-ev) ""))
+                 :raw raw-ev}
+          (or (:session_id raw-ev) (:session-id raw-ev))
+          (assoc :session-id (str (or (:session_id raw-ev) (:session-id raw-ev)))))
 
         "p2p-offer-received"
         {:id eid

@@ -133,6 +133,10 @@
       (doseq [flag runner/cli-flag-inventory]
         (is (str/includes? help flag) (str "Missing flag in help-text: " flag))))
     (let [parsed (runner/parse-cli-args ["--name" "a1"
+                                         "--mode" "twin-seat"
+                                         "--seat" "vector"
+                                         "--coordinator-pubkey" "pk-coord"
+                                         "--max-dm-per-peer" "4"
                                          "--transport" "sim"
                                          "--backend" "mock"
                                          "--model" "m1"
@@ -146,6 +150,10 @@
                                          "--max-turns" "3"
                                          "--no-intro"])]
       (is (= "a1" (:agent-name parsed)))
+      (is (= :twin-seat (:mode parsed)))
+      (is (= :vector (:seat parsed)))
+      (is (= "pk-coord" (:coordinator-pubkey parsed)))
+      (is (= 4 (:max-dm-per-peer-window parsed)))
       (is (= :in-memory (:transport parsed)))
       (is (= :mock (:backend parsed)))
       (is (= "/usr/bin/node" (:node-bin parsed)))
@@ -253,4 +261,57 @@
                                      (stop-session! [_] nil))})
           after (runner/step-agent-turn! ctx {:kind :dm :from "pk-b" :text "ping"})]
       (is (empty? (get-in after [:graph-inst :outbox :reply-out])))
-      (is (= :net-command-failed (:reason (first (get-in after [:graph-inst :outbox :error-out]))))))))
+      (is (= :net-command-failed (:reason (first (get-in after [:graph-inst :outbox :error-out])))))))
+
+  (testing "RCA F2/RC3: session_id is preserved end-to-end across ingress -> coordinator -> ctl send"
+    (let [dm (ingress/normalize-bitecho-event
+              {:event "message-received" :from "pk-2" :session_id "sess-abc" :text "ping" :msg_id "d-sess"})
+          seen-cmds (atom [])
+          handler (bindings/make-bitecho-ctl-handler
+                   {:state-dir "/tmp/test-state"
+                    :exec-fn (fn [cmd]
+                               (swap! seen-cmds conj cmd)
+                               {:exit 0 :out "{\"ok\":true,\"msg_id\":\"m-reply\"}" :err ""})})
+          ctx (runner/init-agent-runtime!
+               {:agent-name "a1"
+                :self-pubkey "pk-a"
+                :transport-bundle {:transport :live
+                                   :event-source (reify event-src/IEventSource
+                                                   (poll-event! [_ c _] {:event nil :cursor c})
+                                                   (close-source! [_] nil))
+                                   :bitecho-handler handler
+                                   :balance-fn (constantly 25000)}
+                :intelligence-port (reify intel-port/IIntelligencePort
+                                     (start-session! [this _] this)
+                                     (generate! [_ _] {:text "pong"})
+                                     (stop-session! [_] nil))})]
+      (is (= "sess-abc" (:session-id dm)))
+      (runner/step-agent-turn! ctx dm)
+      (let [cmd (first @seen-cmds)
+            pairs (set (partition 2 1 cmd))]
+        (is (contains? pairs ["--session-id" "sess-abc"])))))
+
+  (testing "RCA P5/RC6: make-agy-port separates input/output tokens and marks cumulative-only unavailable"
+    (let [port-split (bindings/make-agy-port
+                      {:model "claude-sonnet-5-5-medium"
+                       :send-fn (fn [_]
+                                  {:events [{:event "result"
+                                             :result {:status "SUCCESS"
+                                                      :response "ok"
+                                                      :usage {:input_tokens 120 :output_tokens 45 :total_tokens 165}}}]})})
+          r1 (intel-port/generate! port-split {:prompt "hi"})
+          port-cum (bindings/make-agy-port
+                    {:model "claude-sonnet-5-5-medium"
+                     :send-fn (fn [_]
+                                {:events [{:event "result"
+                                           :result {:status "SUCCESS"
+                                                    :response "ok"
+                                                    :usage {:total_tokens 9000}}}]})})
+          r2 (intel-port/generate! port-cum {:prompt "hi"})]
+      (is (= 120 (:prompt-tokens r1)))
+      (is (= 45 (:new-tokens r1)))
+      (is (= :real (:token-accounting r1)))
+      (is (nil? (:prompt-tokens r2)))
+      (is (nil? (:new-tokens r2)))
+      (is (= 9000 (:cumulative-tokens r2)))
+      (is (= :unavailable (:token-accounting r2))))))

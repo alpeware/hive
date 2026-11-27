@@ -1,23 +1,103 @@
 (ns bitecho.hive.twin-runner
-  "Live 5-Seat Digital-Twin Closed-Loop Runner (Step 2 / Run-1).
+  "Boundary Shells for the 5-Seat Digital-Twin Closed-Loop Runner (In-Memory vs Live Devnet).
 
-   Fetches and SHA-256-verifies the Shared Values doc and all 5 twin prompts
-   from the local Bitecho light-node, executes the R-1 two-fixed-point closed-loop
-   simulation across heterogeneous `agy` frontier models (Claude Opus/Sonnet,
-   Gemini Carbon/Hydrogen, GPT-OSS 120B), runs disposable-copy Phase 2 patch +
-   verification, scores via R-2 SCI, and emits verified R-3 v2 Merkle trace + JSONL."
-  (:require [bitecho.hive.env :as env]
+   All core D41 state transitions, blind Round-1 isolation, prompt builders,
+   verdict parsing, and generation/correlation accounting live in pure Sans-IO `.cljc`
+   namespaces (`bitecho.hive.env`, `bitecho.hive.twin-protocol`,
+   `bitecho.hive.twin-coordinator`).
+
+   ONLY the boundary I/O shells live here:
+   - `run-in-memory-twins!` — 5 independent `twin-seat-graph` Mealy agents + 1
+     `twin-coordinator-graph` over `bitecho.hive.transport/make-in-memory-fabric`.
+   - `run-live-devnet-twins!` — `twin-coordinator-graph` over live `:net/bitecho`
+     (`make-bitecho-ctl-handler` + `make-bitecho-ingress`) dispatching sealed DMs
+     to 5 distributed Mealy twin-seat agents running across the Bitecho devnet.
+   - `run-live-run-1!` / `run-live-run-3!` — backwards-compatible wrappers that
+     drive the unified Sans-IO core and append Phase 2 disposable-copy verification,
+     R-2 SCI scoring, R-3 Trace v2 export, and `top-loop` fail-closed gate check."
+  (:require [bitecho.hive.bindings :as bindings]
+            [bitecho.hive.env :as env]
+            [bitecho.hive.ingress :as ingress]
             [bitecho.hive.scorer :as scorer]
             [bitecho.hive.top-loop :as top]
             [bitecho.hive.trace :as trace]
+            [bitecho.hive.transport :as transport]
+            [bitecho.hive.twin-coordinator :as coord]
+            [bitecho.hive.twin-protocol :as proto]
             [clojure.data.json :as json]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [mealy.event.source :as event-src]
+            [mealy.graph.binder :as binder]
+            [mealy.graph.runtime :as runtime]
+            [mealy.intelligence.port :as intel-port]
             [mealy.sandbox.bwrap :as bwrap]))
 
-(def ^:private default-node-bin (str (System/getProperty "user.home") "/.local/bin/node"))
-(def ^:private default-cli-bundle "../bitecho/dist/bitecho-light-node.cjs")
-(def ^:private default-state-dir (str (System/getProperty "user.home") "/.bitecho/light-node"))
+(def ^:const RUN-3-BASE-REPO-HASH
+  "Anchored multi-repo base hash (bitecho@73ada39 + mealy@13d4e93 + hive@9248d4f)."
+  "661d926aeada3b6ed2f4f82dfff2adb1c4e422df37f8454d99ff9f824da9e13")
+
+(def cli-flag-inventory
+  "Authoritative CLI flag inventory for `bitecho.hive.twin-runner` (AGENTS.md Rule 6)."
+  ["--run"
+   "--transport"
+   "--state-dir"
+   "--out-dir"
+   "--seat-endpoints-edn"
+   "--blind-round1"
+   "--help"])
+
+(defn help-text
+  "Returns CLI usage documentation listing every flag in `cli-flag-inventory`."
+  []
+  (str "Bitecho Hive Digital Twin Runner (Sans-IO Core + In-Memory / Devnet Shells)\n"
+       "Usage: clojure -M -m bitecho.hive.twin-runner [options]\n\n"
+       "Options:\n"
+       "  --run <2|3>                      Preset run profile (default: 3)\n"
+       "  --transport <in-memory|live>     Shell transport: in-memory Mealy fabric or live Bitecho devnet\n"
+       "  --state-dir <path>               Coordinator light-node state directory (for --transport live)\n"
+       "  --out-dir <path>                 Output directory for trace artifacts\n"
+       "  --seat-endpoints-edn <file>      EDN map of {:simon {:pubkey ...} ...} for --transport live\n"
+       "  --blind-round1                   Enforce strict blind Round-1 isolation\n"
+       "  --help                           Print this help message\n"))
+
+(defn parse-cli-args
+  "Parses CLI arguments strictly against `cli-flag-inventory`. Unknown flags throw loudly."
+  [args]
+  (loop [opts {:run "3"
+               :transport :in-memory
+               :state-dir nil
+               :out-dir nil
+               :seat-endpoints-edn nil
+               :blind-round1? false
+               :help? false}
+         rem args]
+    (if (empty? rem)
+      opts
+      (let [[k v & more] rem]
+        (case k
+          "--run" (recur (assoc opts :run (str v)) more)
+          "--transport" (recur (assoc opts :transport (case (str/lower-case (str v))
+                                                        ("sim" "in-memory") :in-memory
+                                                        "live" :live
+                                                        (throw (ex-info (str "Invalid --transport: " v) {:value v}))))
+                               more)
+          "--state-dir" (recur (assoc opts :state-dir (str v)) more)
+          "--out-dir" (recur (assoc opts :out-dir (str v)) more)
+          "--seat-endpoints-edn" (recur (assoc opts :seat-endpoints-edn (str v)) more)
+          "--blind-round1" (recur (assoc opts :blind-round1? true) (rest rem))
+          "--help" (recur (assoc opts :help? true) (rest rem))
+          (throw (ex-info (str "Unknown flag: " k) {:flag k :inventory cli-flag-inventory})))))))
+
+;; Backwards-compatible alias to pure protocol parser
+(def parse-consent-verdict
+  "Delegates to pure `bitecho.hive.twin-protocol/parse-consent-verdict`."
+  proto/parse-consent-verdict)
+
+;; ---------------------------------------------------------------------------
+;; Artifact Fetching & Verification (Boundary I/O)
+;; ---------------------------------------------------------------------------
 
 (defn- hex->utf8
   [^String hex]
@@ -28,10 +108,12 @@
     (String. bs "UTF-8")))
 
 (defn fetch-verified-artifact!
-  "Fetches an artifact from local verified cache (`/tmp/hive-prompts/<cid>.md`) or the
-   local Bitecho node by `--cid` (or `--subnet` + `--path`) and asserts SHA-256 == `cid` loudly."
-  [{:keys [cid subnet path]}]
-  (let [cache-file (when cid (io/file "/tmp/hive-prompts" (str cid ".md")))]
+  "Fetches an artifact from local verified cache (`/tmp/hive-prompts/<cid>.md`),
+   the local Bitecho node by `--cid` (or `--subnet` + `--path`), or `ns1.bitecho.org`
+   HTTPS fallback and asserts SHA-256 == `cid` loudly."
+  [{:keys [cid subnet path state-dir node-bin light-node-js]}]
+  (let [cache-file (when cid (io/file "/tmp/hive-prompts" (str cid ".md")))
+        eff-state-dir (or state-dir (str (System/getProperty "user.home") "/.bitecho/light-node"))]
     (if (and cache-file (.isFile cache-file))
       (let [text (slurp cache-file)
             actual-cid (env/sha256-str text)]
@@ -40,12 +122,16 @@
                           {:expected cid :actual actual-cid :file (.getPath cache-file)})))
         {:cid actual-cid :text text :bytes (count (.getBytes text "UTF-8"))})
       (let [cmd (if cid
-                  [default-node-bin default-cli-bundle "ctl" "--state-dir" default-state-dir
-                   "artifact-get" "--cid" cid]
-                  [default-node-bin default-cli-bundle "ctl" "--state-dir" default-state-dir
-                   "artifact-get" "--subnet" subnet "--path" path])
+                  [(bindings/resolve-node-bin node-bin)
+                   (bindings/resolve-light-node-js light-node-js)
+                   "ctl" "--state-dir" eff-state-dir "artifact-get" "--cid" cid]
+                  [(bindings/resolve-node-bin node-bin)
+                   (bindings/resolve-light-node-js light-node-js)
+                   "ctl" "--state-dir" eff-state-dir "artifact-get" "--subnet" subnet "--path" path])
             res (bwrap/run-command-vec! cmd {:timeout-ms 15000})
-            parsed (when (:ok? res) (json/read-str (:stdout res) :key-fn keyword))
+            parsed (when (:ok? res)
+                     (try (json/read-str (:stdout res) :key-fn keyword)
+                          (catch Exception _ nil)))
             hex-str (when parsed (or (:hex parsed) (:data_hex parsed) (:payload_hex parsed)))
             text (cond
                    hex-str (hex->utf8 hex-str)
@@ -65,189 +151,316 @@
                           {:expected cid :actual actual-cid :path path})))
         {:cid actual-cid :text text :bytes (count (.getBytes text "UTF-8"))}))))
 
-(defn parse-consent-verdict
-  "Parses a twin's raw consent-round completion into a typed R-1 `:protocol-act`."
-  [actor raw-text]
-  (let [upper (str/upper-case (str raw-text))]
-    (cond
-      (re-find #"PARAMOUNT[-_\s]OBJECTION" upper)
-      {:action/type :protocol-act
-       :action/content raw-text
-       :action/protocol {:verb :paramount-objection
-                         :harm-to-aim (subs raw-text 0 (min 280 (count raw-text)))
-                         :fix "Address objection in amendment round"}
-       :action/raw-output raw-text}
+;; ---------------------------------------------------------------------------
+;; Local Agy Seat Port Factory (for In-Memory Shell with Live Frontier Models)
+;; ---------------------------------------------------------------------------
 
-      (or (re-find #"CONSENT[-_\s]WITH[-_\s]ADDENDUM" upper)
-          (re-find #"CONSENT[-_\s]WITH[-_\s]FLAGS" upper))
-      {:action/type :protocol-act
-       :action/content raw-text
-       :action/protocol {:verb :consent-with-addendum
-                         :flags [{:id (str "F-" (name actor))
-                                  :text (subs raw-text 0 (min 240 (count raw-text)))
-                                  :owner actor
-                                  :target-milestone "Run-1"}]}
-       :action/raw-output raw-text}
+(defn make-bwrap-agy-seat-port
+  "Creates an `IIntelligencePort` backed by `bwrap/invoke-agy-turn!` for a given
+   model selector so the in-memory Mealy shell can run either mock or live frontier models."
+  [{:keys [model-selector timeout-ms] :or {timeout-ms 90000}}]
+  (reify intel-port/IIntelligencePort
+    (start-session! [this _] this)
+    (generate! [_ req]
+      (let [t0 (System/nanoTime)
+            res (bwrap/invoke-agy-turn! {:model-selector model-selector
+                                         :prompt (:prompt req)
+                                         :timeout-ms timeout-ms
+                                         :use-bwrap? (bwrap/bwrap-available?)})
+            ms (/ (- (System/nanoTime) t0) 1e6)]
+        (if (:ok? res)
+          {:text (:stdout res) :model model-selector :model-ms ms}
+          {:text (str "CONSENT-WITH-ADDENDUM: [harness-timeout-or-error: " (:stderr res) "]")
+           :model model-selector
+           :model-ms ms})))
+    (stop-session! [_] nil)))
 
-      :else
-      {:action/type :protocol-act
-       :action/content raw-text
-       :action/protocol {:verb :consent}
-       :action/raw-output raw-text})))
+;; ---------------------------------------------------------------------------
+;; Boundary Shell 1: In-Memory Multi-Agent Mealy Shell
+;; ---------------------------------------------------------------------------
 
-(defn- build-seat-turn-prompt
-  [values-text twin-prompt-text obs]
-  (let [stage (:obs/stage obs)
-        rnd (:obs/round obs)
-        recent (->> (:obs/inbox obs)
-                    (take-last 8)
-                    (map (fn [{:keys [from round stage content]}]
-                           (str "- [" (name from) " R" round "/" (name stage) "]: " content)))
-                    (str/join "\n"))]
-    (str "=== SHARED VALUES (Bitecho) ===\n"
-         values-text
-         "\n\n=== YOUR DIGITAL TWIN PROMPT ===\n"
-         twin-prompt-text
-         "\n\n=== SIMULATION CONTEXT (ADVISORY ONLY; SIMULATED CONSENT IS NEVER REAL CONSENT) ===\n"
-         "Phase: " (name (:obs/phase obs)) " | Round: " rnd " | Stage: " (name stage) "\n"
-         "Current Proposal:\n" (:obs/proposal-text obs) "\n\n"
-         (when-not (str/blank? recent)
-           (str "Prior Circle Discussion:\n" recent "\n\n"))
-         (case stage
-           :present "Task (PRESENT): In 2-3 concise sentences, frame or react to the proposal's core intent from your seat. Do not invoke any tools or create files."
-           :questions "Task (CLARIFYING QUESTIONS): Ask 1-2 sharp clarifying questions (or say 'No clarifying questions.') in <= 3 sentences. Do not invoke any tools or create files."
-           :reactions "Task (REACTION ROUND): Give your brief candid reaction (<= 3 sentences) from your seat. Do not invoke any tools or create files."
-           :consent-round "Task (CONSENT ROUND): Start your response on line 1 with EXACTLY ONE of: CONSENT | CONSENT-WITH-ADDENDUM | PARAMOUNT-OBJECTION — followed by 1-3 sentences explaining your verdict (if addendum, list concrete flag F-1; if paramount objection, state concrete harm-to-aim and fix). Do not invoke any tools or create files."
-           "Respond concisely in <= 3 sentences."))))
+(defn- step-graph-turn!
+  [ctx in-port payload]
+  (let [g0 (:graph-inst ctx)
+        prepared (if (zero? (long (:tx g0 0))) g0 (runtime/continue-graph g0))
+        executed (-> prepared
+                     (runtime/enqueue-input in-port payload)
+                     runtime/run-graph!)
+        errs (get-in executed [:outbox :error-out] [])]
+    (-> ctx
+        (assoc :graph-inst executed)
+        (update :all-event-log into (:event-log executed))
+        (update :diagnostics-log into errs))))
 
-(defn- build-amendment-prompt
-  [values-text proposer-prompt current-proposal recent-turns]
-  (let [feedback (->> recent-turns
-                      (map (fn [{:keys [actor-id stage action]}]
-                             (str "- [" (name actor-id) "/" (name stage) "]: "
-                                  (or (:action/content action) (:action/raw-output action)))))
-                      (str/join "\n"))]
-    (str "=== SHARED VALUES (Bitecho) ===\n"
-         values-text
-         "\n\n=== YOUR DIGITAL TWIN PROMPT ===\n"
-         proposer-prompt
-         "\n\n=== AMENDMENT LOOP (ADVISORY SIMULATION) ===\n"
-         "You are rewriting the proposal after Round feedback so it resolves EVERY paramount objection and addendum flag concretely.\n\n"
-         "Previous Proposal:\n" current-proposal "\n\n"
-         "Circle Objections, Addenda & Reactions:\n" feedback "\n\n"
-         "Task: Output ONLY the complete, rewritten, self-contained proposal text (1-2 tight paragraphs, concrete and bounded: directly resolve every paramount objection and addendum flag with exact invariants, failure modes, and boundaries; affirm pure Sans-IO .cljc core + advisory-only boundary + real Stage 2 review gates). Do NOT include meta-commentary or invoke tools.")))
+(defn- drain-one-agent!
+  [ctx max-events]
+  (let [source (get-in ctx [:transport-bundle :event-source])]
+    (loop [c ctx
+           n 0]
+      (if (>= n max-events)
+        c
+        (let [{:keys [event cursor]} (event-src/poll-event! source (:cursor c) 0)]
+          (if-not event
+            (assoc c :cursor cursor)
+            (let [[mw' verdict] (event-src/apply-middleware (:middleware-state c) event (+ 10000 (* n 100)))
+                  c-mw (cond-> (assoc c :middleware-state mw')
+                         (:diagnose verdict) (update :diagnostics-log conj (:diagnose verdict)))
+                  c-after (if (= :accept (:action verdict))
+                            (step-graph-turn! c-mw :incoming-in event)
+                            c-mw)]
+              (recur (assoc c-after :cursor cursor) (inc n)))))))))
 
-(def ^:const RUN-3-BASE-REPO-HASH
-  "Anchored multi-repo base hash (bitecho@73ada39 + mealy@13d4e93 + hive@9248d4f)."
-  "661d926aeada43b6ed2f4f82dfff2adb1c4e422df37f8454d99ff9f824da9e13")
+(defn run-in-memory-mealy-episode!
+  "Runs the full 5-seat digital twin episode using 5 independent `twin-seat-graph`
+   Mealy agents + 1 `twin-coordinator-graph` Mealy agent communicating exclusively
+   via `:net/bitecho` DMs over `bitecho.hive.transport/make-in-memory-fabric`."
+  [{:keys [spec seed run-id values-text seat-prompts seat-ports blind-round1?
+           max-ticks inject-stray-pleasantry?]
+    :or {seed 20261126
+         run-id "sim-twins"
+         values-text ""
+         blind-round1? false
+         max-ticks 200}}]
+  (let [seats (mapv :seat-id (:scenario/seats spec))
+        coord-pk "pk-coordinator"
+        seat-endpoints (into {}
+                             (map (fn [s]
+                                    [s {:pubkey (str "pk-" (name s))
+                                        :session-id (str "sess-" (name s))}])
+                                  seats))
+        balances (into {coord-pk 100000}
+                       (map (fn [s] [(str "pk-" (name s)) 100000]) seats))
+        fabric (transport/make-in-memory-fabric {:balances balances})
+        coord-tx (transport/build-agent-transport {:transport :in-memory
+                                                   :fabric fabric
+                                                   :self-pubkey coord-pk
+                                                   :subnet-id "hive/twins"})
+        coord-dev (binder/compile-device
+                   [:device {:id :twin-coord-device}
+                    [:cap {:id :storage-cas :type :storage/cas}]
+                    [:cap {:id :bitecho-net
+                           :type :net/bitecho
+                           :subnet-id "hive/twins"
+                           :min-balance 2000
+                           :balance 100000
+                           :handler-fn (:bitecho-handler coord-tx)}]])
+        coord-graph (binder/bind-agent
+                     (coord/twin-coordinator-graph
+                      {:coord-init-opts {:spec spec
+                                         :seed seed
+                                         :run-id run-id
+                                         :values-text values-text
+                                         :seat-prompts seat-prompts
+                                         :seat-endpoints seat-endpoints
+                                         :blind-round1? blind-round1?
+                                         :run-phase2? false}})
+                     coord-dev {})
+        coord-ctx0 {:graph-inst coord-graph
+                    :device-inst coord-dev
+                    :transport-bundle coord-tx
+                    :middleware-state (event-src/init-middleware-state {:self-id coord-pk :max-per-window 1000})
+                    :cursor 0
+                    :all-event-log []
+                    :diagnostics-log []}
+        seat-ctxs0 (into {}
+                         (map (fn [s]
+                                (let [pk (str "pk-" (name s))
+                                      tx (transport/build-agent-transport {:transport :in-memory
+                                                                           :fabric fabric
+                                                                           :self-pubkey pk
+                                                                           :subnet-id "hive/twins"})
+                                      dev (binder/compile-device
+                                           [:device {:id (keyword (str "twin-" (name s) "-device"))}
+                                            [:cap {:id :storage-cas :type :storage/cas}]
+                                            [:cap {:id :llm-port
+                                                   :type :intelligence/port
+                                                   :port (get seat-ports s)}]
+                                            [:cap {:id :bitecho-net
+                                                   :type :net/bitecho
+                                                   :subnet-id "hive/twins"
+                                                   :min-balance 2000
+                                                   :balance 100000
+                                                   :handler-fn (:bitecho-handler tx)}]])
+                                      g (binder/bind-agent (coord/twin-seat-graph {:seat-id s
+                                                                                   :subnet-id "hive/twins"
+                                                                                   :coordinator-pubkey coord-pk})
+                                                           dev {})]
+                                  [s {:graph-inst g
+                                      :device-inst dev
+                                      :transport-bundle tx
+                                      :middleware-state (event-src/init-middleware-state {:self-id pk :max-per-window 1000})
+                                      :cursor 0
+                                      :all-event-log []
+                                      :diagnostics-log []}])))
+                         seats)]
+    (when inject-stray-pleasantry?
+      (transport/fabric-deliver-dm! fabric "pk-stranger" "pk-axiom" "Hey Axiom, nice weather today!" "stray-1" "sess-stray"))
+    (try
+      (let [coord-started (step-graph-turn! coord-ctx0 :control-in {:event/type :start})]
+        (loop [c-ctx coord-started
+               s-ctxs seat-ctxs0
+               tick 0]
+          (let [coord-st (coord/coordinator-state-of (:graph-inst c-ctx))]
+            (if (or (coord/terminal? coord-st) (>= tick max-ticks))
+              {:coordinator-state coord-st
+               :env-state (:env coord-st)
+               :coordinator-context c-ctx
+               :seat-contexts s-ctxs
+               :fabric fabric
+               :ticks tick}
+              (let [s-ctxs' (into {} (map (fn [[s sc]] [s (drain-one-agent! sc 5)]) s-ctxs))
+                    c-ctx' (drain-one-agent! c-ctx 5)]
+                (recur c-ctx' s-ctxs' (inc tick)))))))
+      (finally
+        (binder/stop-device! coord-dev)
+        (doseq [[_ sc] seat-ctxs0]
+          (binder/stop-device! (:device-inst sc)))))))
 
-(defn run-live-run-1!
-  "Executes live 5-seat closed-loop simulation (`live-run-1b`, `live-run-2`, or `live-run-3`)
-   via `agy --print` across all 5 heterogeneous models with real LLM proposer-amendment rewrites
-   in `:amendment-loop`, runs disposable-copy Phase 2 patch + verification, scores via SCI,
-   chains into `bitecho.hive.top-loop` (verifying fail-closed promotion gate on sim consent),
-   and writes verified R-3 artifacts to `out-dir`."
-  [{:keys [seed out-dir max-review-rounds run-id proposal-id proposal-text vector-model
-           base-repo-hash patch-doc-path]
-    :or {seed 20261120
-         out-dir "/tmp/hive-live-run2"
-         max-review-rounds 3
-         run-id "live-run-2"
-         proposal-id "PROP-RUN-2-MEMENTO-CIRCLES"
-         proposal-text env/RUN-2-PROPOSAL-TEXT
-         vector-model "gemini-4-carbon-medium"
-         base-repo-hash RUN-3-BASE-REPO-HASH
-         patch-doc-path "docs/twin-circle-advisory-policy.md"}}]
+(defn run-in-memory-twins!
+  "Executes Phase 1 through the single pure Sans-IO `twin-coordinator` + 5 independent
+   `twin-seat-graph` Mealy agents communicating over `bitecho.hive.transport` in-memory fabric."
+  [{:keys [spec seed run-id values-text seat-prompts seat-ports blind-round1? max-ticks]
+    :or {seed 20261126 run-id "sim-twins" blind-round1? false max-ticks 200}}]
+  (let [effective-ports (or seat-ports
+                            (into {}
+                                  (map (fn [{:keys [seat-id model-selector]}]
+                                         [seat-id (make-bwrap-agy-seat-port {:model-selector model-selector})])
+                                       (:scenario/seats spec))))]
+    (run-in-memory-mealy-episode!
+     {:spec spec
+      :seed seed
+      :run-id run-id
+      :values-text values-text
+      :seat-prompts seat-prompts
+      :seat-ports effective-ports
+      :blind-round1? blind-round1?
+      :max-ticks max-ticks})))
+
+;; ---------------------------------------------------------------------------
+;; Boundary Shell 2: Distributed Live Devnet Shell
+;; ---------------------------------------------------------------------------
+
+(defn- step-coord-graph!
+  [ctx in-port payload]
+  (let [g0 (:graph-inst ctx)
+        prepared (if (zero? (long (:tx g0 0))) g0 (runtime/continue-graph g0))
+        executed (-> prepared
+                     (runtime/enqueue-input in-port payload)
+                     runtime/run-graph!)
+        errs (get-in executed [:outbox :error-out] [])]
+    (-> ctx
+        (assoc :graph-inst executed)
+        (update :all-event-log into (:event-log executed))
+        (update :diagnostics-log into errs))))
+
+(defn run-live-devnet-twins!
+  "Executes Phase 1 over the live Bitecho devnet using the EXACT same
+   `twin-coordinator-graph` Sans-IO core, dispatching sealed DMs via
+   `make-bitecho-ctl-handler` and polling replies via `make-bitecho-ingress`."
+  [{:keys [spec seed run-id values-text seat-prompts seat-endpoints state-dir
+           node-bin light-node-js subnet-id min-balance blind-round1?
+           poll-timeout-ms max-poll-cycles]
+    :or {seed 20261126
+         run-id "live-devnet-twins"
+         subnet-id "hive/twins"
+         min-balance bindings/DEFAULT-MIN-BALANCE
+         blind-round1? false
+         poll-timeout-ms 90000
+         max-poll-cycles 120}}]
+  (when-not (and state-dir (seq seat-endpoints))
+    (throw (ex-info "run-live-devnet-twins! requires :state-dir and non-empty :seat-endpoints"
+                    {:state-dir state-dir :seat-endpoints-keys (keys seat-endpoints)})))
+  (let [ctl-handler (bindings/make-bitecho-ctl-handler {:state-dir state-dir
+                                                        :node-bin node-bin
+                                                        :light-node-js light-node-js})
+        status (ctl-handler {"cmd" "status"})
+        self-pk (:pubkey status)
+        bal (long (or (get-in status [:account :spendable]) (get-in status [:account :balance]) 25000))
+        cursor-file (str state-dir "/twin-coord-cursor.edn")
+        roster-pks (set (keep :pubkey (vals seat-endpoints)))
+        source (ingress/make-bitecho-ingress {:state-dir state-dir
+                                              :node-bin node-bin
+                                              :light-node-js light-node-js
+                                              :cursor-file cursor-file
+                                              :ctl-handler ctl-handler
+                                              :offer-policy :roster-only
+                                              :roster-set roster-pks})
+        dev (binder/compile-device
+             [:device {:id :twin-live-coord-device}
+              [:cap {:id :storage-cas :type :storage/cas}]
+              [:cap {:id :bitecho-net
+                     :type :net/bitecho
+                     :subnet-id subnet-id
+                     :min-balance min-balance
+                     :balance bal
+                     :handler-fn ctl-handler}]])
+        g0 (binder/bind-agent
+            (coord/twin-coordinator-graph
+             {:coord-init-opts {:spec spec
+                                :seed seed
+                                :run-id run-id
+                                :values-text values-text
+                                :seat-prompts seat-prompts
+                                :seat-endpoints seat-endpoints
+                                :blind-round1? blind-round1?
+                                :run-phase2? false}
+              :min-balance min-balance})
+            dev {})
+        ctx0 {:graph-inst g0
+              :device-inst dev
+              :middleware-state (event-src/init-middleware-state {:self-id self-pk
+                                                                  :allowed-broadcast-senders roster-pks
+                                                                  :max-per-window 200})
+              :cursor (ingress/read-cursor cursor-file)
+              :all-event-log []
+              :diagnostics-log []}]
+    (try
+      (let [ctx-started (step-coord-graph! ctx0 :control-in {:event/type :start})]
+        (loop [ctx ctx-started
+               cycle 0]
+          (let [coord-st (coord/coordinator-state-of (:graph-inst ctx))]
+            (if (or (coord/terminal? coord-st) (>= cycle (long max-poll-cycles)))
+              {:coordinator-state coord-st
+               :env-state (:env coord-st)
+               :coordinator-context ctx
+               :cycles cycle}
+              (let [prev-cur (:cursor ctx)
+                    {:keys [event cursor diagnose]} (event-src/poll-event! source prev-cur poll-timeout-ms)
+                    ctx-d (cond-> ctx diagnose (update :diagnostics-log conj diagnose))]
+                (if-not event
+                  ;; Poll timed out -> notify coordinator with :seat-timeout so generation bumps & retries loudly
+                  (let [inflight (:inflight coord-st)
+                        ctx-t (if inflight
+                                (step-coord-graph! ctx-d :control-in {:event/type :seat-timeout
+                                                                      :correlation-id (:correlation-id inflight)
+                                                                      :generation (:generation inflight)
+                                                                      :seat (:seat inflight)
+                                                                      :error "devnet-poll-timeout"})
+                                ctx-d)]
+                    (when (> (long cursor) (long prev-cur))
+                      (ingress/write-cursor! cursor-file cursor))
+                    (recur (assoc ctx-t :cursor cursor) (inc cycle)))
+                  (let [[mw' verdict] (event-src/apply-middleware (:middleware-state ctx-d) event (System/currentTimeMillis))
+                        ctx-mw (cond-> (assoc ctx-d :middleware-state mw')
+                                 (:diagnose verdict) (update :diagnostics-log conj (:diagnose verdict)))
+                        ctx-after (if (= :accept (:action verdict))
+                                    (step-coord-graph! ctx-mw :incoming-in event)
+                                    ctx-mw)]
+                    (when (> (long cursor) (long prev-cur))
+                      (ingress/write-cursor! cursor-file cursor))
+                    (recur (assoc ctx-after :cursor cursor) (inc cycle)))))))))
+      (finally
+        (binder/stop-device! dev)
+        (event-src/close-source! source)))))
+
+;; ---------------------------------------------------------------------------
+;; Phase 2 Disposable-Copy Verification & R-2/R-3 Trace Finalization
+;; ---------------------------------------------------------------------------
+
+(defn- run-phase2-and-finalize!
+  [{:keys [st-fp1 spec seed out-dir run-id proposal-id base-repo-hash patch-doc-path transport-mode]}]
   (.mkdirs (io/file out-dir))
-  (let [base-spec (env/run-1-scenario-spec seed)
-        seats (mapv (fn [s]
-                      (if (= :vector (:seat-id s))
-                        (assoc s :model-selector vector-model)
-                        s))
-                    (:scenario/seats base-spec))
-        spec (-> base-spec
-                 (assoc :scenario/id (str "governance-closed-loop-" run-id)
-                        :scenario/seats seats
-                        :scenario/proposal {:proposal/id proposal-id
-                                            :proposal/cid (env/sha256-str proposal-text)
-                                            :proposal/text proposal-text})
-                 (assoc-in [:scenario/limits :max-review-rounds] max-review-rounds))
-        values-art (fetch-verified-artifact! {:cid env/VALUES-DRAFT-CID})
-        seat-prompts (into {}
-                           (map (fn [{:keys [seat-id prompt-cid]}]
-                                  (let [art (fetch-verified-artifact! {:cid prompt-cid})]
-                                    (println (format "[twin-runner] Verified prompt for %s (%d B, CID %s...)"
-                                                     (name seat-id) (:bytes art) (subs prompt-cid 0 8)))
-                                    [seat-id (:text art)]))
-                                (:scenario/seats spec)))
-        seat-models (into {} (map (juxt :seat-id :model-selector) (:scenario/seats spec)))
-        st0 (env/init-env spec seed)
-        ;; Phase 1: Live 5-seat D41 review loop with real LLM proposer-amendment rewrite
-        st-fp1
-        (loop [st st0]
-          (if (env/phase-1-done? st)
-            st
-            (let [actor (env/next-actor st)
-                  stage (:stage st)
-                  rnd (:round st)
-                  model (get seat-models actor)
-                  obs (env/observe st actor)
-                  t0 (System/nanoTime)
-                  action
-                  (if (and (= :present stage) (not= :simon actor))
-                    {:action/type :pass
-                     :action/content "Listening to presenter."
-                     :action/raw-output "PASS"
-                     :latency-ms 0}
-                    (let [prompt (build-seat-turn-prompt (:text values-art) (get seat-prompts actor) obs)
-                          _ (println (format "[twin-runner] R%d/%s -> %s (%s)..." rnd (name stage) (name actor) model))
-                          bwrap? (bwrap/bwrap-available?)
-                          res (bwrap/invoke-agy-turn! {:model-selector model
-                                                       :prompt prompt
-                                                       :timeout-ms 90000
-                                                       :use-bwrap? bwrap?})
-                          lat-ms (long (/ (- (System/nanoTime) t0) 1e6))
-                          raw (if (:ok? res)
-                                (:stdout res)
-                                (str "CONSENT-WITH-ADDENDUM: [harness-timeout-or-error: " (:stderr res) "]"))]
-                      (println (format "[twin-runner]   <- %s (%d ms): %s"
-                                       (name actor) lat-ms
-                                       (subs (str/replace raw #"\s+" " ") 0 (min 120 (count raw)))))
-                      (if (= :consent-round stage)
-                        (assoc (parse-consent-verdict actor raw) :latency-ms lat-ms)
-                        {:action/type :message
-                         :action/content raw
-                         :action/raw-output raw
-                         :latency-ms lat-ms})))
-                  [st' effects] (env/step st actor action)
-                  amend-eff (first (filter #(= :emit-proposal-amendment (first %)) effects))
-                  st'' (if amend-eff
-                         (let [t-am (System/nanoTime)
-                               round-turns (filter #(and (= rnd (:round %))
-                                                         (contains? #{:reactions :consent-round} (:stage %)))
-                                                   (:turns st'))
-                               am-prompt (build-amendment-prompt (:text values-art)
-                                                                 (get seat-prompts :simon)
-                                                                 (:proposal-text st)
-                                                                 round-turns)
-                               _ (println (format "[twin-runner] R%d/amendment-loop -> simon (%s) rewriting proposal..."
-                                                  rnd (get seat-models :simon)))
-                               am-res (bwrap/invoke-agy-turn! {:model-selector (get seat-models :simon)
-                                                               :prompt am-prompt
-                                                               :timeout-ms 90000
-                                                               :use-bwrap? (bwrap/bwrap-available?)})
-                               am-ms (long (/ (- (System/nanoTime) t-am) 1e6))
-                               rewritten (if (and (:ok? am-res) (not (str/blank? (:stdout am-res))))
-                                           (:stdout am-res)
-                                           (:proposal-text st'))]
-                           (println (format "[twin-runner]   <- simon amendment (%d ms): %s"
-                                            am-ms
-                                            (subs (str/replace rewritten #"\s+" " ") 0 (min 140 (count rewritten)))))
-                           (first (env/apply-proposal-amendment st' :simon rewritten am-ms)))
-                         st')]
-              (recur st''))))
-        ;; Phase 2 (if Fixed Point 1 reached): disposable git copy -> advisory doc patch -> verify
-        st-final
+  (let [st-final
         (if (= :fixed-point-1 (:status st-fp1))
           (let [[st-p2 _] (env/transition-to-implement st-fp1 (:sim-consent-receipt st-fp1))
                 copy-dir (str out-dir "/disposable-copy")
@@ -276,7 +489,6 @@
                                         :action/protocol {:verb :submit-patch :patch-text patch-text}
                                         :action/raw-output (str "SUBMIT_PATCH " patch-doc-path)
                                         :latency-ms 50})
-                ;; Run real in-memory proof/chaos verification via our deterministic R-1/R-2/R-3 check
                 chaos-check (env/run-in-memory-closed-loop! (env/run-1-scenario-spec seed))
                 chaos-ok? (true? (get-in chaos-check [:verification :ok?]))
                 [st-fp2 _] (env/step st-patch :vector
@@ -309,7 +521,6 @@
                   :patch-cid (or (:patch-cid out) "none")
                   :telemetry-cid (env/sha256-str (pr-str (:chaos-results out)))
                   :telemetry-green? telemetry-green?})
-        ;; Verify hard gate: simulated consent MUST fail closed with :diagnose
         sim-attempt-receipt (assoc (or (:sim-consent-receipt out) {:simulation? true :advisory-only true})
                                    :patch-cid (or (:patch-cid out) "none")
                                    :receipt-cid (:header-cid trace-v2))
@@ -320,6 +531,7 @@
         summary {:trace/version 2
                  :run-id (:run-id trace-v2)
                  :scenario-id (:scenario-id trace-v2)
+                 :transport transport-mode
                  :base-repo-hash base-repo-hash
                  :live-agy-models? true
                  :bwrap-enforced? (boolean (bwrap/bwrap-available?))
@@ -351,7 +563,7 @@
                  :verification verification}]
     (spit (io/file out-dir (str run-id "-trace.edn")) (pr-str summary))
     (spit (io/file out-dir (str run-id "-trace.jsonl")) jsonl)
-    (println (str "[twin-runner] " (str/upper-case run-id) " COMPLETE:")
+    (println (str "[twin-runner] " (str/upper-case run-id) " (" (name transport-mode) ") COMPLETE:")
              (pr-str {:status (:status out)
                       :rounds (:round out)
                       :turns (count (:turns trace-v2))
@@ -360,6 +572,72 @@
                       :team-reward (:team-reward rewards)
                       :gate-fail-closed? gate-fail-closed?}))
     summary))
+
+(defn run-live-run-1!
+  "Executes the 5-seat closed-loop simulation via the unified Sans-IO core on either
+   `:transport :in-memory` (default, 5 independent Mealy seat agents in-process) or
+   `:transport :live` (distributed Mealy seat agents over live Bitecho devnet)."
+  [{:keys [seed out-dir max-review-rounds run-id proposal-id proposal-text vector-model
+           base-repo-hash patch-doc-path transport state-dir seat-endpoints blind-round1? seat-ports]
+    :or {seed 20261120
+         out-dir "/tmp/hive-live-run2"
+         max-review-rounds 3
+         run-id "live-run-2"
+         proposal-id "PROP-RUN-2-MEMENTO-CIRCLES"
+         proposal-text env/RUN-2-PROPOSAL-TEXT
+         vector-model "gemini-4-carbon-high"
+         base-repo-hash RUN-3-BASE-REPO-HASH
+         patch-doc-path "docs/twin-circle-advisory-policy.md"
+         transport :in-memory
+         blind-round1? false}}]
+  (let [base-spec (env/run-1-scenario-spec seed)
+        seats (mapv (fn [s]
+                      (if (= :vector (:seat-id s))
+                        (assoc s :model-selector vector-model)
+                        s))
+                    (:scenario/seats base-spec))
+        spec (-> base-spec
+                 (assoc :scenario/id (str "governance-closed-loop-" run-id)
+                        :scenario/seats seats
+                        :scenario/proposal {:proposal/id proposal-id
+                                            :proposal/cid (env/sha256-str proposal-text)
+                                            :proposal/text proposal-text})
+                 (assoc-in [:scenario/limits :max-review-rounds] max-review-rounds))
+        values-art (fetch-verified-artifact! {:cid env/VALUES-DRAFT-CID :state-dir state-dir})
+        seat-prompts (into {}
+                           (map (fn [{:keys [seat-id prompt-cid]}]
+                                  (let [art (fetch-verified-artifact! {:cid prompt-cid :state-dir state-dir})]
+                                    [seat-id (:text art)]))
+                                (:scenario/seats spec)))
+        phase1-res (case (keyword transport)
+                     :live
+                     (run-live-devnet-twins! {:spec spec
+                                              :seed seed
+                                              :run-id run-id
+                                              :values-text (:text values-art)
+                                              :seat-prompts seat-prompts
+                                              :seat-endpoints seat-endpoints
+                                              :state-dir state-dir
+                                              :blind-round1? blind-round1?})
+                     (:in-memory :sim)
+                     (run-in-memory-twins! {:spec spec
+                                            :seed seed
+                                            :run-id run-id
+                                            :values-text (:text values-art)
+                                            :seat-prompts seat-prompts
+                                            :seat-ports seat-ports
+                                            :blind-round1? blind-round1?})
+                     (throw (ex-info (str "Unsupported twin-runner transport: " transport)
+                                     {:transport transport})))]
+    (run-phase2-and-finalize! {:st-fp1 (:env-state phase1-res)
+                               :spec spec
+                               :seed seed
+                               :out-dir out-dir
+                               :run-id run-id
+                               :proposal-id proposal-id
+                               :base-repo-hash base-repo-hash
+                               :patch-doc-path patch-doc-path
+                               :transport-mode (keyword transport)})))
 
 (defn run-live-run-3!
   "Executes Live 5-Seat Run-3 (Whole-Stack Top-Loop proposal anchored to
@@ -373,16 +651,25 @@
             :run-id "live-run-3"
             :proposal-id "PROP-RUN-3-WHOLE-STACK-TOP-LOOP"
             :proposal-text top/RUN-3-PROPOSAL-TEXT
-            :vector-model "gemini-4-carbon-medium"
+            :vector-model "gemini-4-carbon-high"
             :base-repo-hash RUN-3-BASE-REPO-HASH
             :patch-doc-path "docs/run3-top-loop-advisory.md"}
            opts))))
 
 (defn -main
-  "CLI entrypoint to execute live 5-seat closed-loop simulations (`--run 3` or default Run-3)."
+  "CLI entrypoint to execute 5-seat closed-loop simulations (`--transport in-memory|live`)."
   [& args]
-  (let [run-arg (some (fn [[k v]] (when (= k "--run") v)) (partition 2 1 args))]
-    (case run-arg
-      "2" (run-live-run-1! {})
-      (run-live-run-3! {})))
+  (let [opts (parse-cli-args args)]
+    (if (:help? opts)
+      (println (help-text))
+      (let [endpoints (when-let [f (:seat-endpoints-edn opts)]
+                        (edn/read-string (slurp f)))
+            run-opts (cond-> {:transport (:transport opts)
+                              :blind-round1? (:blind-round1? opts)}
+                       (:state-dir opts) (assoc :state-dir (:state-dir opts))
+                       (:out-dir opts) (assoc :out-dir (:out-dir opts))
+                       endpoints (assoc :seat-endpoints endpoints))]
+        (case (:run opts)
+          "2" (run-live-run-1! run-opts)
+          (run-live-run-3! run-opts)))))
   (shutdown-agents))

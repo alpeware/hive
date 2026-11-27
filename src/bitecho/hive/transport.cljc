@@ -27,18 +27,21 @@
 (defn fabric-deliver-dm!
   "Injects a direct message into the in-memory fabric addressed to `to-pubkey`."
   ([fabric from-pubkey to-pubkey text]
-   (fabric-deliver-dm! fabric from-pubkey to-pubkey text nil))
+   (fabric-deliver-dm! fabric from-pubkey to-pubkey text nil nil))
   ([fabric from-pubkey to-pubkey text msg-id]
+   (fabric-deliver-dm! fabric from-pubkey to-pubkey text msg-id nil))
+  ([fabric from-pubkey to-pubkey text msg-id session-id]
    (let [updated (swap! fabric
                         (fn [st]
                           (let [next-seq (inc (:seq st))
                                 eid (or msg-id (str "sim-dm-" next-seq))
-                                ev {:event_id next-seq
-                                    :id eid
-                                    :kind :dm
-                                    :from from-pubkey
-                                    :to to-pubkey
-                                    :text (str text)}]
+                                ev (cond-> {:event_id next-seq
+                                            :id eid
+                                            :kind :dm
+                                            :from from-pubkey
+                                            :to to-pubkey
+                                            :text (str text)}
+                                     (some? session-id) (assoc :session-id (str session-id)))]
                             (-> st
                                 (assoc :seq next-seq)
                                 (update :events conj ev)))))]
@@ -108,9 +111,12 @@
         "send"
         (let [peer (str (or (get cmd-map "peer") ""))
               msg (str (or (get cmd-map "message") ""))
-              ev (fabric-deliver-dm! fabric self-pubkey peer msg)]
-          (swap! fabric update :sent conj {:cmd "send" :from self-pubkey :peer peer :message msg :msg-id (:id ev)})
-          {:ok true :msg_id (:id ev) :peer peer :burn 0 :zero_burn true})
+              sid (get cmd-map "session_id")
+              ev (fabric-deliver-dm! fabric self-pubkey peer msg nil sid)]
+          (swap! fabric update :sent conj (cond-> {:cmd "send" :from self-pubkey :peer peer :message msg :msg-id (:id ev)}
+                                            sid (assoc :session-id sid)))
+          (cond-> {:ok true :msg_id (:id ev) :peer peer :burn 0 :zero_burn true}
+            sid (assoc :session_id sid)))
 
         {:ok false :error (str "unsupported-sim-verb:" verb)}))))
 
